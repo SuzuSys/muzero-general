@@ -672,7 +672,9 @@ def scalar_to_support(x, support_size):
     See paper appendix Network Architecture
     """
     # Reduce the scale (defined in https://arxiv.org/abs/1805.11593)
-    x = torch.sign(x) * (torch.sqrt(torch.abs(x) + 1) - 1) + 0.001 * x
+    # FIXED -------------------------------------------------------------------------------------
+    x = torch.sign(x) * (torch.sqrt(torch.abs(x) + 1) - 1) + 0.01 * x
+    # -------------------------------------------------------------------------------------------
 
     # Encode on a vector
     x = torch.clamp(x, -support_size, support_size)

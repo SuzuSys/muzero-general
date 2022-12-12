@@ -7,6 +7,8 @@ import torch
 
 import models
 
+import discord_io
+
 
 @ray.remote
 class ReplayBuffer:
@@ -29,6 +31,10 @@ class ReplayBuffer:
 
         # Fix random generator seed
         numpy.random.seed(self.config.seed)
+
+        # CHANGED -----------------------------------------------
+        discord_io.replay_buffer_send("Initialized!")
+        # -------------------------------------------------------
 
     def save_game(self, game_history, shared_storage=None):
         if self.config.PER:
@@ -169,7 +175,22 @@ class ReplayBuffer:
             game_prob_dict = dict(
                 [(game_id, prob) for game_id, prob in zip(game_id_list, game_probs)]
             )
+            # CHANGED ---------------------------------------------------------------------
+            ## send number of NaN to discord
+            ## num_nan = sum(numpy.isnan(game_probs))
+            ## discord_io.send("[test log] Number of NaN in game_probs: {}".format(num_nan))
+            # nan to num
+            ## if num_nan > 0:
+            ##    game_probs_zero = numpy.nan_to_num(game_probs)
+            ##    num = (1 - sum(game_probs_zero)) / num_nan
+            ##    numpy.nan_to_num(game_probs, copy=False, nan=num)
+            ##    discord_io.send("[test log] sum of game_probs: {}".format(sum(game_probs)))
+            # -----------------------------------------------------------------------------
+
+            # ERROR POSITION!--------------------------------------------------------------
             selected_games = numpy.random.choice(game_id_list, n_games, p=game_probs)
+            # ERROR TEXT: ValueError: probabilities contain NaN
+            # -----------------------------------------------------------------------------
         else:
             selected_games = numpy.random.choice(list(self.buffer.keys()), n_games)
             game_prob_dict = {}
@@ -231,7 +252,9 @@ class ReplayBuffer:
         # The value target is the discounted root value of the search tree td_steps into the
         # future, plus the discounted sum of all rewards until then.
         bootstrap_index = index + self.config.td_steps
+        
         if bootstrap_index < len(game_history.root_values):
+            # max_moves <= td_steps の場合、ここは通らない。
             root_values = (
                 game_history.root_values
                 if game_history.reanalysed_predicted_root_values is None
@@ -325,6 +348,10 @@ class Reanalyse:
 
         self.num_reanalysed_games = initial_checkpoint["num_reanalysed_games"]
 
+        # CHANGED ----------------------------------------------------------------
+        discord_io.reanalyse_send("Initialized!")
+        # ------------------------------------------------------------------------
+
     def reanalyse(self, replay_buffer, shared_storage):
         while ray.get(shared_storage.get_info.remote("num_played_games")) < 1:
             time.sleep(0.1)
@@ -351,17 +378,18 @@ class Reanalyse:
                         )
                         for i in range(len(game_history.root_values))
                     ]
-                )
+                ) # [stacked_observation, stacked_observation, ..., stacked_observation]
 
                 observations = (
                     torch.tensor(observations)
                     .float()
                     .to(next(self.model.parameters()).device)
-                )
+                ) # convert to tensor type
                 values = models.support_to_scalar(
-                    self.model.initial_inference(observations)[0],
+                    # representation -> prediction
+                    self.model.initial_inference(observations)[0], # value is index=0
                     self.config.support_size,
-                )
+                ) # [value, value, ..., value]
                 game_history.reanalysed_predicted_root_values = (
                     torch.squeeze(values).detach().cpu().numpy()
                 )
@@ -371,3 +399,10 @@ class Reanalyse:
             shared_storage.set_info.remote(
                 "num_reanalysed_games", self.num_reanalysed_games
             )
+
+            # CHANGED -------------------------------------------------------------
+            discord_io.reanalyse_send("Trained step: {}\nreanalysed-play step: {}\n[Reanalyse Game] Episode have finished!".format(
+                ray.get(shared_storage.get_info.remote("training_step")),
+                self.num_reanalysed_games,
+            ))
+            # ---------------------------------------------------------------------

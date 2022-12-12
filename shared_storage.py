@@ -3,6 +3,8 @@ import copy
 import ray
 import torch
 
+import discord_io
+
 
 @ray.remote
 class SharedStorage:
@@ -13,6 +15,9 @@ class SharedStorage:
     def __init__(self, checkpoint, config):
         self.config = config
         self.current_checkpoint = copy.deepcopy(checkpoint)
+        # CHANGED ----------------------------------------------------------
+        discord_io.shared_storage_send("Initialized!")
+        # ------------------------------------------------------------------
 
     def save_checkpoint(self, path=None):
         if not path:

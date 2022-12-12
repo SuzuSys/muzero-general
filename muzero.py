@@ -68,6 +68,10 @@ class MuZero:
         numpy.random.seed(self.config.seed)
         torch.manual_seed(self.config.seed)
 
+        # CHANGED-------------------------------------------------------------------
+        print('The number of GPUs available: {}'.format(torch.cuda.device_count()))
+        #---------------------------------------------------------------------------
+
         # Manage GPUs
         if self.config.max_num_gpus == 0 and (
             self.config.selfplay_on_gpu
@@ -82,14 +86,17 @@ class MuZero:
             or self.config.train_on_gpu
             or self.config.reanalyse_on_gpu
         ):
+            # THIS
             total_gpus = (
                 self.config.max_num_gpus
                 if self.config.max_num_gpus is not None
                 else torch.cuda.device_count()
             )
+            # total_gpus = 1 (Google Colab)
         else:
             total_gpus = 0
         self.num_gpus = total_gpus / split_resources_in
+        # self.num_gpus = 1 (Google Colab)
         if 1 < self.num_gpus:
             self.num_gpus = math.floor(self.num_gpus)
 
@@ -147,6 +154,7 @@ class MuZero:
                 + log_in_tensorboard * self.config.selfplay_on_gpu
                 + self.config.use_last_model_value * self.config.reanalyse_on_gpu
             )
+            # num_gpus_per_worker = 1
             if 1 < num_gpus_per_worker:
                 num_gpus_per_worker = math.floor(num_gpus_per_worker)
         else:
@@ -156,23 +164,24 @@ class MuZero:
         self.training_worker = trainer.Trainer.options(
             num_cpus=0,
             num_gpus=num_gpus_per_worker if self.config.train_on_gpu else 0,
-        ).remote(self.checkpoint, self.config)
+            # num_gpus=1
+        ).remote(self.checkpoint, self.config) # 0
 
         self.shared_storage_worker = shared_storage.SharedStorage.remote(
             self.checkpoint,
             self.config,
-        )
+        ) # 1
         self.shared_storage_worker.set_info.remote("terminate", False)
 
         self.replay_buffer_worker = replay_buffer.ReplayBuffer.remote(
             self.checkpoint, self.replay_buffer, self.config
-        )
+        ) # 2
 
         if self.config.use_last_model_value:
             self.reanalyse_worker = replay_buffer.Reanalyse.options(
                 num_cpus=0,
                 num_gpus=num_gpus_per_worker if self.config.reanalyse_on_gpu else 0,
-            ).remote(self.checkpoint, self.config)
+            ).remote(self.checkpoint, self.config) # 3
 
         self.self_play_workers = [
             self_play.SelfPlay.options(
@@ -183,8 +192,9 @@ class MuZero:
                 self.Game,
                 self.config,
                 self.config.seed + seed,
+                seed,
             )
-            for seed in range(self.config.num_workers)
+            for seed in range(self.config.num_workers) # 4 ... 3 + num_workers
         ]
 
         # Launch workers
@@ -220,7 +230,8 @@ class MuZero:
             self.Game,
             self.config,
             self.config.seed + self.config.num_workers,
-        )
+            -1,
+        ) # 3 + num_workers
         self.test_worker.continuous_self_play.remote(
             self.shared_storage_worker, None, True
         )
@@ -329,9 +340,15 @@ class MuZero:
         except KeyboardInterrupt:
             pass
 
-        self.terminate_workers()
+        # CHANGED -------------------------------------------------------------------
+        try:
+            self.terminate_workers()
+        except:
+            pass
+        # ---------------------------------------------------------------------------
 
         if self.config.save_model:
+            print("save model!!!")
             # Persist replay buffer to disk
             path = self.config.results_path / "replay_buffer.pkl"
             print(f"\n\nPersisting replay buffer games to disk at {path}")
@@ -630,6 +647,7 @@ if __name__ == "__main__":
         muzero = MuZero(sys.argv[1], config)
         muzero.train()
     else:
+        print("Version: 2.1.37")
         print("\nWelcome to MuZero! Here's a list of games:")
         # Let user pick a game
         games = [

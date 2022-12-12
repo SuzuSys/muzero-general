@@ -7,6 +7,8 @@ import torch
 
 import models
 
+import discord_io
+
 
 @ray.remote
 class Trainer:
@@ -57,6 +59,10 @@ class Trainer:
             self.optimizer.load_state_dict(
                 copy.deepcopy(initial_checkpoint["optimizer_state"])
             )
+        
+        # CHANGED ------------------------------------------------------------
+        discord_io.trainer_send("Initialized!")
+        # --------------------------------------------------------------------
 
     def continuous_update_weights(self, replay_buffer, shared_storage):
         # Wait for the replay buffer to be filled
@@ -79,6 +85,10 @@ class Trainer:
                 policy_loss,
             ) = self.update_weights(batch)
 
+            # CHANGED ------------------------------------------------------------
+            # discord_io.trainer_send("[{}/{}] Updated weights!".format(self.training_step, self.config.training_steps))
+            #---------------------------------------------------------------------
+
             if self.config.PER:
                 # Save new priorities in the replay buffer (See https://arxiv.org/abs/1803.00933)
                 replay_buffer.update_priorities.remote(priorities, index_batch)
@@ -94,6 +104,9 @@ class Trainer:
                     }
                 )
                 if self.config.save_model:
+                    # CHANGED ------------------------------------------------------------
+                    discord_io.trainer_send("[{}/{}] Saved Checkpoint!".format(self.training_step, self.config.training_steps))
+                    #---------------------------------------------------------------------
                     shared_storage.save_checkpoint.remote()
             shared_storage.set_info.remote(
                 {
@@ -139,7 +152,7 @@ class Trainer:
         # Keep values as scalars for calculating the priorities for the prioritized replay
         target_value_scalar = numpy.array(target_value, dtype="float32")
         priorities = numpy.zeros_like(target_value_scalar)
-
+        
         device = next(self.model.parameters()).device
         if self.config.PER:
             weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
@@ -165,12 +178,19 @@ class Trainer:
         # target_value: batch, num_unroll_steps+1, 2*support_size+1
         # target_reward: batch, num_unroll_steps+1, 2*support_size+1
 
-        ## Generate predictions
+        ## representation -> prediction
         value, reward, policy_logits, hidden_state = self.model.initial_inference(
             observation_batch
         )
+
+        # value: batch, 2*support_size+1
+        # reward: batch, 2*support_size+1
+        # policy_logits: batch, len(action_space)
+        # hidden_state: batch, channels(in the ResNet), height, width
+        
         predictions = [(value, reward, policy_logits)]
-        for i in range(1, action_batch.shape[1]):
+        for i in range(1, action_batch.shape[1]): # num_unroll_steps
+            ## dynamics -> prediction
             value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
                 hidden_state, action_batch[:, i]
             )
@@ -257,7 +277,7 @@ class Trainer:
         # Mean over batch dimension (pseudocode do a sum)
         loss = loss.mean()
 
-        # Optimize
+        # Optimize 重みの更新
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()

@@ -7,14 +7,16 @@ import torch
 
 import models
 
+import discord_io
+
 
 @ray.remote
 class SelfPlay:
     """
     Class which run in a dedicated thread to play games and save them to the replay-buffer.
     """
-
-    def __init__(self, initial_checkpoint, Game, config, seed):
+    # if worker_id == -1: test_play, else: self_play
+    def __init__(self, initial_checkpoint, Game, config, seed, worker_id):
         self.config = config
         self.game = Game(seed)
 
@@ -28,6 +30,14 @@ class SelfPlay:
         self.model.to(torch.device("cuda" if self.config.selfplay_on_gpu else "cpu"))
         self.model.eval()
 
+        # CHANGED ---------------------------------------------------------------
+        self.worker_id = worker_id
+        if worker_id == -1:
+            discord_io.test_play_send("Initialized!")
+        else:
+            discord_io.self_play_send(seed, "Initialized!")
+        # -----------------------------------------------------------------------
+
     def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
         while ray.get(
             shared_storage.get_info.remote("training_step")
@@ -36,20 +46,30 @@ class SelfPlay:
         ):
             self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
 
+            # CHANGED---------------------------------------------------------------------
+            io_training_step = ray.get(shared_storage.get_info.remote("training_step"))
+            # ----------------------------------------------------------------------------
+
             if not test_mode:
+                
                 game_history = self.play_game(
                     self.config.visit_softmax_temperature_fn(
-                        trained_steps=ray.get(
-                            shared_storage.get_info.remote("training_step")
-                        )
+                        trained_steps=io_training_step # changed
                     ),
                     self.config.temperature_threshold,
-                    False,
+                    True,
                     "self",
                     0,
                 )
 
                 replay_buffer.save_game.remote(game_history, shared_storage)
+
+                # CHANGED---------------------------------------------------------------------
+                discord_io.self_play_send(self.worker_id, "Trained step: {}\nSelf-played step: {}\nEpisode have finished!".format(
+                    io_training_step,
+                    ray.get(shared_storage.get_info.remote("num_played_games")),
+                ))
+                # ----------------------------------------------------------------------------
 
             else:
                 # Take the best action (no exploration) in test mode
@@ -71,23 +91,46 @@ class SelfPlay:
                         ),
                     }
                 )
+
+                # CHANGED---------------------------------------------------------------------
+                io_muzero_outcome = "None"
+                # ----------------------------------------------------------------------------
+                
                 if 1 < len(self.config.players):
+                    # CHANGED-----------------------------------------------------------------
+                    io_muzero_reward = sum(
+                        reward
+                        for i, reward in enumerate(game_history.reward_history)
+                        if game_history.to_play_history[i - 1]
+                        == self.config.muzero_player
+                    )
+                    io_opponent_reward = sum(
+                        reward
+                        for i, reward in enumerate(game_history.reward_history)
+                        if game_history.to_play_history[i - 1]
+                        != self.config.muzero_player
+                    )
+                    # ------------------------------------------------------------------------
+
                     shared_storage.set_info.remote(
                         {
-                            "muzero_reward": sum(
-                                reward
-                                for i, reward in enumerate(game_history.reward_history)
-                                if game_history.to_play_history[i - 1]
-                                == self.config.muzero_player
-                            ),
-                            "opponent_reward": sum(
-                                reward
-                                for i, reward in enumerate(game_history.reward_history)
-                                if game_history.to_play_history[i - 1]
-                                != self.config.muzero_player
-                            ),
+                            "muzero_reward": io_muzero_reward, # changed
+                            "opponent_reward": io_opponent_reward, # changed
                         }
                     )
+
+                    # CHANGED----------------------------------------------------------------
+                    io_muzero_outcome = "WIN" if io_muzero_reward > 0 else "LOSE" if io_opponent_reward > 0 else "DRAW"
+                    # -----------------------------------------------------------------------
+
+                
+                # CHANGED---------------------------------------------------------------------
+                discord_io.test_play_send("Trained step: {}\nSelf-played step: {}\nEpisode have finished!\nMuZero Player {}!".format(
+                    io_training_step,
+                    ray.get(shared_storage.get_info.remote("num_played_games")),
+                    io_muzero_outcome,
+                ))
+                # ----------------------------------------------------------------------------
 
             # Managing the self-play / training ratio
             if not test_mode and self.config.self_play_delay:
@@ -141,10 +184,11 @@ class SelfPlay:
 
                 # Choose the action
                 if opponent == "self" or muzero_player == self.game.to_play():
+                    legal_actions = self.game.legal_actions()
                     root, mcts_info = MCTS(self.config).run(
                         self.model,
                         stacked_observations,
-                        self.game.legal_actions(),
+                        legal_actions,
                         self.game.to_play(),
                         True,
                     )
@@ -155,6 +199,10 @@ class SelfPlay:
                         or len(game_history.action_history) < temperature_threshold
                         else 0,
                     )
+                    print('action')
+                    print(action)
+                    print('legal_actions')
+                    print(legal_actions)
 
                     if render:
                         print(f'Tree depth: {mcts_info["max_tree_depth"]}')
@@ -271,6 +319,9 @@ class MCTS:
         hidden state given the current observation.
         We then run a Monte Carlo Tree Search using only action sequences and the model
         learned by the network.
+
+        tree の root で、representation function を使用して、current observation から hidden state を取得します。
+        次に、action sequence と network によって学習された model のみを使用して、MCTS を実行します。
         """
         if override_root_with:
             root = override_root_with
@@ -283,6 +334,7 @@ class MCTS:
                 .unsqueeze(0)
                 .to(next(model.parameters()).device)
             )
+            # initial_inference は representation と prediction を含む
             (
                 root_predicted_value,
                 reward,
@@ -336,6 +388,7 @@ class MCTS:
             # Inside the search tree we use the dynamics function to obtain the next hidden
             # state given an action and the previous hidden state
             parent = search_path[-2]
+            # recurrent_interface は gynamics と prediction を含む
             value, reward, policy_logits, hidden_state = model.recurrent_inference(
                 parent.hidden_state,
                 torch.tensor([[action]]).to(parent.hidden_state.device),

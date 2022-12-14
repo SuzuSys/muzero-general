@@ -61,16 +61,16 @@ class SelfPlay:
                     "self",
                     0,
                 )
-
+                print('finished play_game.')
                 replay_buffer.save_game.remote(game_history, shared_storage)
-
+                print('finished save_game.')
                 # CHANGED---------------------------------------------------------------------
                 discord_io.self_play_send(self.worker_id, "Trained step: {}\nSelf-played step: {}\nEpisode have finished!".format(
                     io_training_step,
                     ray.get(shared_storage.get_info.remote("num_played_games")),
                 ))
                 # ----------------------------------------------------------------------------
-
+                print('finished discord_io.')
             else:
                 # Take the best action (no exploration) in test mode
                 game_history = self.play_game(
@@ -199,12 +199,11 @@ class SelfPlay:
                         or len(game_history.action_history) < temperature_threshold
                         else 0,
                     )
-                    print('action')
-                    print(action)
-                    print('legal_actions')
-                    print(legal_actions)
 
                     if render:
+                        print(f'game_history count: {len(game_history.action_history)}')
+                        print(f'legal_actions: {legal_actions}')
+                        print(f'action: {action}')
                         print(f'Tree depth: {mcts_info["max_tree_depth"]}')
                         print(
                             f"Root value for player {self.game.to_play()}: {root.value():.2f}"

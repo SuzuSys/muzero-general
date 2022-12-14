@@ -1,64 +1,19 @@
 # Following function always moves characters 
 # from high index to low index.
 
-import random, enum
-from typing import NamedTuple, Optional, Tuple, List
-import dataclasses
+import random
+from typing import Optional, Tuple, List
 import numpy as np
 
-import collections
-
 from .config import PIPS_COUNT, CHECKERS, HOME_POINTS, POINTS
-from .position import Position
-PositionType = Position
-NumpyType = np.ndarray
-
-@enum.unique
-class Die(enum.IntEnum):
-    LEFT = 0b00
-    RIGHT = 0b01
-DieType = Die
-
-class Dice(NamedTuple):
-    left: int
-    right: int
-DiceType = Dice
-
-@dataclasses.dataclass
-class UsedDice:
-    left: int = 0
-    right: int = 0
-    def count(self, die: DieType) -> None:
-        if die == Die.LEFT:
-            self.left += 1
-        else:
-            self.right += 1
-UsedDiceType = UsedDice
-
-@enum.unique
-class MatchState(enum.Enum):
-    NOTHING = 0b00
-    TURN_OVER = 0b01
-    GAME_OVER = 0b10
-MatchStateType = MatchState
-
-@dataclasses.dataclass
-class Move:
-    pips: int
-    source: Optional[int]
-    destination: Optional[int]
-    next_moves: List["Move"]
-MoveType = Move
-
-class Action(NamedTuple):
-    die: DieType
-    source: Optional[int]
-ActionType = Action
+from .position import Position, PositionType
+from .structs import Die, Dice, UsedDice, MatchState, Move, Action, DieType, DiceType, UsedDiceType, MatchStateType, MoveType, ActionType
 
 class GammonOneway:
     def __init__(self, seed: int):
         """
-        Initialise Backgammon.
+        Initialise Backgammon.\n
+        In this class, the checkers are always moved from right to left.
 
         Args:
             seed (int): random seed
@@ -90,8 +45,8 @@ class GammonOneway:
         Dice roll.
         """
         self.dice = Dice(
-            random.randrange(1, PIPS_COUNT),
-            random.randrange(1, PIPS_COUNT),
+            random.randrange(PIPS_COUNT) + 1,
+            random.randrange(PIPS_COUNT) + 1,
         )
     
     def first_roll(self) -> None:
@@ -237,10 +192,10 @@ class GammonOneway:
             for move in self.legal_plays]
         
         def source_to_action(die: DieType, source: Optional[int]) -> int:
-            if source:
-                return (POINTS + 1) * die + source + 1
-            else:
+            if source == None:
                 return (POINTS + 1) * (die + 1)
+            else:
+                return (POINTS + 1) * die + source + 1
         
         legal_actions: List[int] = [source_to_action(action.die, action.source)
             for action in legal_moves]
@@ -259,25 +214,29 @@ class GammonOneway:
         """
         die: DieType
         source: int
-        if action == 0:
-            return MatchState.NOTHING
-        elif action <= POINTS + 1:
+        action_temp: int = action
+        if action_temp == 0:
+            return MatchState.TURN_OVER
+        elif action_temp <= POINTS + 1:
             die = Die.LEFT
-            action -= 1
+            action_temp -= 1
         else:
             die = Die.RIGHT
-            action -= POINTS + 2
-        if action == POINTS:
+            action_temp -= POINTS + 2
+        if action_temp == POINTS:
             source = None
         else:
-            source = action
+            source = action_temp
         
         pips: int = self.dice[die]
-        move: Move
+        move: Optional[MoveType] = None
+        drive: List[Tuple[int, int]] = []
         for m in self.legal_plays:
+            drive.append((m.pips, m.source))
             if m.pips == pips and m.source == source:
                 move = m
                 break
+        assert move, f"ERROR! action: {action},\n action_temp: {action_temp},\n die: {die},\n source: {source},\n pips: {pips},\n move: {move},\n drive: {drive}"
         self.position = self.position.apply_move(move.source, move.destination)
         self.legal_plays = move.next_moves
         self.used_dice.count(die)
@@ -291,14 +250,4 @@ class GammonOneway:
 
         return match_state
 
-        
-
-        
-        
-        
-        
-
-
-
-                    
-
+GammonOnewayType = GammonOneway

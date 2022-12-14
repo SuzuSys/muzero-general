@@ -2,7 +2,7 @@ import numpy as np
 
 CHECKERS = 8
 POINTS = 12
-HOME_POINTS = int(POINTS / 4)
+HOME_POINTS = POINTS // 4
 PIPS_COUNT = 3 # <= HOME_POINTS
 
 # Player_0's position
@@ -29,3 +29,6 @@ OBS_DEPTH = 9
 # 7: right dice (numerical)
 # 8: chose dice (left dice: downer, right dice: upper)
 # 9: turn (player_0: 0, player_1: 1)
+
+# render setting
+HEIGHT_POINTS = 3

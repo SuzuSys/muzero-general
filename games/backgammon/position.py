@@ -1,9 +1,9 @@
 import numpy as np
 import dataclasses
-from .config import INITIAL_POSITION, POINTS, HOME_POINTS
 from typing import Optional, Tuple
 
-NumpyType = np.ndarray
+from .config import INITIAL_POSITION, POINTS, HOME_POINTS
+from .structs import NumpyType
 
 @dataclasses.dataclass(frozen=True)
 class Position:
@@ -154,6 +154,4 @@ class Position:
             self.player_off,
         )
 
-
-
-    
+PositionType = Position

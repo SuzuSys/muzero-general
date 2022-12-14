@@ -1,17 +1,14 @@
-import enum
 from typing import List
 import numpy as np
 
-from .config import POINTS, OBS_WIDTH, OBS_HEIGHT, OBS_DEPTH, HOME_POINTS
-from .gammon_oneway import GammonOneway, MatchState, MatchStateType, DiceType, PositionType, UsedDiceType
-GammonOnewayType = GammonOneway
-NumpyType = np.ndarray
+from .config import POINTS, HOME_POINTS, OBS_WIDTH, OBS_HEIGHT, OBS_DEPTH
+from .position import PositionType
+from .gammon_oneway import GammonOneway, GammonOnewayType
+from .gammon_render import Render, RenderType
+from .structs import MatchState, Player, MatchStateType, DiceType, UsedDiceType, NumpyType, PlayerType
 
-@enum.unique
-class Player(enum.IntEnum):
-    ZERO = 0b00
-    ONE = 0b01
-PlayerType = Player
+# observation
+OBS_TRI: NumpyType = np.tri(OBS_HEIGHT+1, OBS_HEIGHT, -1, dtype='int8')
 
 class BackGammon:
     def __init__(self, seed: int, turn_zero: bool):
@@ -26,6 +23,7 @@ class BackGammon:
         self.turn: PlayerType = Player.ZERO if turn_zero else Player.ONE
         self.gammon.first_roll()
         self.gammon.generate_plays()
+        self.ascii_board: RenderType = Render()
     
     def reset(self, turn_zero: bool) -> None:
         """
@@ -105,7 +103,7 @@ class BackGammon:
         """
         position: PositionType = self.gammon.position
         if self.turn == Player.ONE:
-            position = self.gammon.position.swap_players()
+            position = position.swap_players()
         # player_0's checkers move high index to low index
         # player_1's checkers move low index to high index
         w: int = OBS_WIDTH
@@ -113,20 +111,19 @@ class BackGammon:
         d: int = OBS_DEPTH
         observation: NumpyType = np.zeros((d, w, h), dtype='int8')
         # player_0 board
-        tri: NumpyType = np.tri(h+1, h, -1, dtype='int8')
         player_0_board: NumpyType = np.zeros(w, dtype='int8')
         player_0_board[0] = position.player_off
         player_0_board[1:-1] = position.board_points
         player_0_board[-1] = position.player_bar
         player_0_board[player_0_board < 0] = 0
-        observation[0] = tri[player_0_board]
+        observation[0] = OBS_TRI[player_0_board]
         # player_1 board
         player_1_board: NumpyType = player_0_board
         player_1_board[0] = position.opponent_bar
         player_1_board[1:-1] = -position.board_points
         player_1_board[-1] = position.opponent_off
         player_1_board[player_1_board < 0] = 0
-        observation[1] = tri[player_1_board]
+        observation[1] = OBS_TRI[player_1_board]
         # off bar board
         observation[2, [0,-1]] = 1
         # player_0 home board
@@ -151,17 +148,12 @@ class BackGammon:
 
         return observation
     
-    def render(self) -> None:
-        
-        
-
-
-
-        
-
-    
-
-
-
-
-
+    def __str__(self):
+        position: PositionType = self.gammon.position
+        if self.turn == Player.ONE:
+            position = position.swap_players()
+        return self.ascii_board.render(
+            position,
+            self.gammon.dice,
+            self.gammon.used_dice,
+            self.turn)

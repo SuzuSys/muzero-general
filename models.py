@@ -365,16 +365,18 @@ class DynamicsNetwork(torch.nn.Module):
         self.resblocks = torch.nn.ModuleList(
             [ResidualBlock(num_channels - 1) for _ in range(num_blocks)]
         )
-
-        self.conv1x1_reward = torch.nn.Conv2d(
-            num_channels - 1, reduced_channels_reward, 1
-        )
-        self.block_output_size_reward = block_output_size_reward
-        self.fc = mlp(
-            self.block_output_size_reward,
-            fc_reward_layers,
-            full_support_size,
-        )
+        # FIXED ------------------------------------------------------------------------------------
+        # self.conv1x1_reward = torch.nn.Conv2d(
+        #    num_channels - 1, reduced_channels_reward, 1
+        #)
+        # self.block_output_size_reward = block_output_size_reward
+        #self.fc = mlp(
+        #    self.block_output_size_reward,
+        #    fc_reward_layers,
+        #    1,
+        #    torch.nn.Tanh
+        #)
+        # ------------------------------------------------------------------------------------------
 
     def forward(self, x):
         x = self.conv(x)
@@ -383,9 +385,12 @@ class DynamicsNetwork(torch.nn.Module):
         for block in self.resblocks:
             x = block(x)
         state = x
-        x = self.conv1x1_reward(x)
-        x = x.view(-1, self.block_output_size_reward)
-        reward = self.fc(x)
+        # FIXED ------------------------------------------------------------------------------------
+        # x = self.conv1x1_reward(x)
+        # x = x.view(-1, self.block_output_size_reward)
+        # reward = self.fc(x) # tensor to scalar*batch [-1, 1] (tensor type)
+        reward = torch.zeros(len(x), 1).to(x.device)
+        # ------------------------------------------------------------------------------------------
         return state, reward
 
 
@@ -412,9 +417,14 @@ class PredictionNetwork(torch.nn.Module):
         self.conv1x1_policy = torch.nn.Conv2d(num_channels, reduced_channels_policy, 1)
         self.block_output_size_value = block_output_size_value
         self.block_output_size_policy = block_output_size_policy
+        # FIXED --------------------------------------------------------------------------------------
         self.fc_value = mlp(
-            self.block_output_size_value, fc_value_layers, full_support_size
+            self.block_output_size_value, 
+            fc_value_layers, 
+            1, 
+            torch.nn.Tanh
         )
+        # --------------------------------------------------------------------------------------------
         self.fc_policy = mlp(
             self.block_output_size_policy,
             fc_policy_layers,
@@ -428,7 +438,9 @@ class PredictionNetwork(torch.nn.Module):
         policy = self.conv1x1_policy(x)
         value = value.view(-1, self.block_output_size_value)
         policy = policy.view(-1, self.block_output_size_policy)
-        value = self.fc_value(value)
+        # FIXED -----------------------------------------------------------------------------------------
+        value = self.fc_value(value) # tensor to scalar*batch [-1, 1] (tensor type)
+        # -----------------------------------------------------------------------------------------------
         policy = self.fc_policy(policy)
         return policy, value
 
@@ -453,7 +465,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
         super().__init__()
         self.action_space_size = action_space_size
         self.full_support_size = 2 * support_size + 1
-        block_output_size_reward = (
+        block_output_size_reward = ( # ?????????????????????????????????????????????????????????????????
             (
                 reduced_channels_reward
                 * math.ceil(observation_shape[1] / 16)
@@ -463,7 +475,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
             else (reduced_channels_reward * observation_shape[1] * observation_shape[2])
         )
 
-        block_output_size_value = (
+        block_output_size_value = ( # ????????????????????????????????????????????????????????????????????
             (
                 reduced_channels_value
                 * math.ceil(observation_shape[1] / 16)
@@ -473,7 +485,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
             else (reduced_channels_value * observation_shape[1] * observation_shape[2])
         )
 
-        block_output_size_policy = (
+        block_output_size_policy = ( # ???????????????????????????????????????????????????????????????????
             (
                 reduced_channels_policy
                 * math.ceil(observation_shape[1] / 16)
@@ -597,26 +609,21 @@ class MuZeroResidualNetwork(AbstractNetwork):
             next_encoded_state - min_next_encoded_state
         ) / scale_next_encoded_state
         return next_encoded_state_normalized, reward
-
+    # representation and prediction
     def initial_inference(self, observation):
         encoded_state = self.representation(observation)
         policy_logits, value = self.prediction(encoded_state)
         # reward equal to 0 for consistency
-        reward = torch.log(
-            (
-                torch.zeros(1, self.full_support_size)
-                .scatter(1, torch.tensor([[self.full_support_size // 2]]).long(), 1.0)
-                .repeat(len(observation), 1)
-                .to(observation.device)
-            )
-        )
+        # FIXED --------------------------------------------------------------------------------------
+        reward = torch.zeros(len(observation),1).to(observation.device)
+        # --------------------------------------------------------------------------------------------
         return (
-            value,
-            reward,
+            value, # scalar
+            reward, # scalar
             policy_logits,
             encoded_state,
         )
-
+    # dynamics and prediction
     def recurrent_inference(self, encoded_state, action):
         next_encoded_state, reward = self.dynamics(encoded_state, action)
         policy_logits, value = self.prediction(next_encoded_state)
@@ -628,13 +635,13 @@ class MuZeroResidualNetwork(AbstractNetwork):
 
 
 def mlp(
-    input_size,
-    layer_sizes,
-    output_size,
-    output_activation=torch.nn.Identity,
-    activation=torch.nn.ELU,
+    input_size, # scalar
+    layer_sizes, # [scalar, scalar, scalar]
+    output_size, # scalar
+    output_activation=torch.nn.Identity, # 恒等関数
+    activation=torch.nn.ELU, # reluをなめらかにしたもの
 ):
-    sizes = [input_size] + layer_sizes + [output_size]
+    sizes = [input_size] + layer_sizes + [output_size] # [scalar, scalar, scalar, scalar, scalar]
     layers = []
     for i in range(len(sizes) - 1):
         act = activation if i < len(sizes) - 2 else output_activation
@@ -650,7 +657,7 @@ def support_to_scalar(logits, support_size):
     # Decode to a scalar
     probabilities = torch.softmax(logits, dim=1)
     support = (
-        torch.tensor([x for x in range(-support_size, support_size + 1)])
+        torch.tensor([x for x in range(-support_size, support_size + 1)]) # [-3, -2, -1, 0, 1, 2, 3]
         .expand(probabilities.shape)
         .float()
         .to(device=probabilities.device)

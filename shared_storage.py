@@ -43,3 +43,9 @@ class SharedStorage:
             self.current_checkpoint.update(keys)
         else:
             raise TypeError
+
+    def set_list_info(self, keys, index, values=None):
+        if isinstance(keys, str) and isinstance(index, int) and values is not None:
+            self.current_checkpoint[keys][index] = values
+        else:
+            raise TypeError

@@ -251,10 +251,12 @@ class ReplayBuffer:
     def compute_target_value(self, game_history, index):
         # The value target is the discounted root value of the search tree td_steps into the
         # future, plus the discounted sum of all rewards until then.
+        # board game の場合、target_value = {win: 1, lose(draw): 0}
         bootstrap_index = index + self.config.td_steps
         
         if bootstrap_index < len(game_history.root_values):
             # max_moves <= td_steps の場合、ここは通らない。
+            # つまり board game の場合、ここは通らない。
             root_values = (
                 game_history.root_values
                 if game_history.reanalysed_predicted_root_values is None
@@ -282,7 +284,7 @@ class ReplayBuffer:
                 else -reward
             ) * self.config.discount**i
 
-        return value
+        return value 
 
     def make_target(self, game_history, state_index):
         """

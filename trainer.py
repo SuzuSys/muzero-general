@@ -133,6 +133,8 @@ class Trainer:
                     and not ray.get(shared_storage.get_info.remote("terminate"))
                 ):
                     time.sleep(0.5)
+        print("shutdown trainer...")
+        shared_storage.set_info.remote("terminated_trainer", True)
 
     def update_weights(self, batch):
         """
@@ -170,21 +172,28 @@ class Trainer:
         # target_reward: batch, num_unroll_steps+1
         # target_policy: batch, num_unroll_steps+1, len(action_space)
         # gradient_scale_batch: batch, num_unroll_steps+1
-
-        target_value = models.scalar_to_support(target_value, self.config.support_size)
-        target_reward = models.scalar_to_support(
-            target_reward, self.config.support_size
-        )
-        # target_value: batch, num_unroll_steps+1, 2*support_size+1
-        # target_reward: batch, num_unroll_steps+1, 2*support_size+1
+        
+        # FIXED -----------------------------------------------------------------------------------
+        # target_value = models.scalar_to_support(target_value, self.config.support_size)
+        # target_reward = models.scalar_to_support(
+        #     target_reward, self.config.support_size
+        # )
+        # -----------------------------------------------------------------------------------------
+        # (FALSE) target_value: batch, num_unroll_steps+1, 2*support_size+1
+        # (FALSE) target_reward: batch, num_unroll_steps+1, 2*support_size+1
+        # target_value: batch, num_unroll_steps+1
+        # target_reward: batch, num_unroll_steps+1
+        # target_policy: batch, num_unroll_steps+1, len(action_space)
 
         ## representation -> prediction
         value, reward, policy_logits, hidden_state = self.model.initial_inference(
             observation_batch
         )
 
-        # value: batch, 2*support_size+1
-        # reward: batch, 2*support_size+1
+        # (FALSE) value: batch, 2*support_size+1
+        # (FALSE) reward: batch, 2*support_size+1
+        # value: batch, 1
+        # reward: batch, 1
         # policy_logits: batch, len(action_space)
         # hidden_state: batch, channels(in the ResNet), height, width
         
@@ -197,7 +206,7 @@ class Trainer:
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
             predictions.append((value, reward, policy_logits))
-        # predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | 9 (according to the 2nd dim)
+        # (????)predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | 9 (according to the 2nd dim)
 
         ## Compute losses
         value_loss, reward_loss, policy_loss = (0, 0, 0)
@@ -245,15 +254,17 @@ class Trainer:
             current_value_loss.register_hook(
                 lambda grad: grad / gradient_scale_batch[:, i]
             )
-            current_reward_loss.register_hook(
-                lambda grad: grad / gradient_scale_batch[:, i]
-            )
+            # FIXED -----------------------------------------------------------------------------------
+            #current_reward_loss.register_hook(
+            #    lambda grad: grad / gradient_scale_batch[:, i]
+            #)
+            # -----------------------------------------------------------------------------------------
             current_policy_loss.register_hook(
                 lambda grad: grad / gradient_scale_batch[:, i]
             )
 
             value_loss += current_value_loss
-            reward_loss += current_reward_loss
+            reward_loss += current_reward_loss # 0
             policy_loss += current_policy_loss
 
             # Compute priorities for the prioritized replay (See paper appendix Training)
@@ -312,9 +323,7 @@ class Trainer:
         target_policy,
     ):
         # Cross-entropy seems to have a better convergence than MSE
-        value_loss = (-target_value * torch.nn.LogSoftmax(dim=1)(value)).sum(1)
-        reward_loss = (-target_reward * torch.nn.LogSoftmax(dim=1)(reward)).sum(1)
-        policy_loss = (-target_policy * torch.nn.LogSoftmax(dim=1)(policy_logits)).sum(
-            1
-        )
+        value_loss = (value - target_value)**2
+        reward_loss = reward # all zero
+        policy_loss = (-target_policy * torch.nn.LogSoftmax(dim=1)(policy_logits)).sum(1)
         return value_loss, reward_loss, policy_loss

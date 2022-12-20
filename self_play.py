@@ -70,7 +70,6 @@ class SelfPlay:
                     ray.get(shared_storage.get_info.remote("num_played_games")),
                 ))
                 # ----------------------------------------------------------------------------
-                print('finished discord_io.')
             else:
                 # Take the best action (no exploration) in test mode
                 game_history = self.play_game(
@@ -148,7 +147,7 @@ class SelfPlay:
                 ):
                     time.sleep(0.5)
 
-        self.close_game()
+        self.close_game(shared_storage)
 
     def play_game(
         self, temperature, temperature_threshold, render, opponent, muzero_player
@@ -229,8 +228,14 @@ class SelfPlay:
 
         return game_history
 
-    def close_game(self):
+    def close_game(self, shared_storage):
         self.game.close()
+        print("shutdown self_play.....")
+        if self.worker_id == -1:
+            shared_storage.set_info.remote("terminated_test_play", True)
+        else:
+            shared_storage.set_list_info.remote("terminated_self_play", self.worker_id, True)
+
 
     def select_opponent_action(self, opponent, stacked_observations):
         """
@@ -335,15 +340,15 @@ class MCTS:
             )
             # initial_inference は representation と prediction を含む
             (
-                root_predicted_value,
-                reward,
+                root_predicted_value, # scalar [-1, 1]
+                reward, # scalar [-1, 1]
                 policy_logits,
                 hidden_state,
             ) = model.initial_inference(observation)
-            root_predicted_value = models.support_to_scalar(
-                root_predicted_value, self.config.support_size
-            ).item()
-            reward = models.support_to_scalar(reward, self.config.support_size).item()
+            # FIXED --------------------------------------------------------------------------------------
+            root_predicted_value = root_predicted_value[0,0].item()
+            reward = reward[0,0].item()
+            # --------------------------------------------------------------------------------------------
             assert (
                 legal_actions
             ), f"Legal actions should not be an empty array. Got {legal_actions}."
@@ -353,7 +358,7 @@ class MCTS:
             root.expand(
                 legal_actions,
                 to_play,
-                reward,
+                reward, #  scalar [-1, 1]
                 policy_logits,
                 hidden_state,
             )
@@ -392,12 +397,14 @@ class MCTS:
                 parent.hidden_state,
                 torch.tensor([[action]]).to(parent.hidden_state.device),
             )
-            value = models.support_to_scalar(value, self.config.support_size).item()
-            reward = models.support_to_scalar(reward, self.config.support_size).item()
+            # FIXED ----------------------------------------------------------------------------------
+            value = value[0,0].item()
+            reward = reward[0,0].item()
+            # ----------------------------------------------------------------------------------------
             node.expand(
                 self.config.action_space,
                 virtual_to_play,
-                reward,
+                reward, # scalar [-1, 1]
                 policy_logits,
                 hidden_state,
             )

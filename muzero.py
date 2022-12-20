@@ -121,6 +121,9 @@ class MuZero:
             "num_played_steps": 0,
             "num_reanalysed_games": 0,
             "terminate": False,
+            "terminated_self_play": None, # []
+            "terminated_test_play": False,
+            "terminated_trainer": False,
         }
         self.replay_buffer = {}
 
@@ -161,17 +164,18 @@ class MuZero:
             num_gpus_per_worker = 0
 
         # Initialize workers
-        self.training_worker = trainer.Trainer.options(
-            num_cpus=0,
-            num_gpus=num_gpus_per_worker if self.config.train_on_gpu else 0,
-            # num_gpus=1
-        ).remote(self.checkpoint, self.config) # 0
-
         self.shared_storage_worker = shared_storage.SharedStorage.remote(
             self.checkpoint,
             self.config,
         ) # 1
         self.shared_storage_worker.set_info.remote("terminate", False)
+        
+        self.training_worker = trainer.Trainer.options(
+            num_cpus=0,
+            num_gpus=num_gpus_per_worker if self.config.train_on_gpu else 0,
+            # num_gpus=1
+        ).remote(self.checkpoint, self.config) # 0
+        self.shared_storage_worker.set_info.remote("terminated_trainer", False)
 
         self.replay_buffer_worker = replay_buffer.ReplayBuffer.remote(
             self.checkpoint, self.replay_buffer, self.config
@@ -191,11 +195,15 @@ class MuZero:
                 self.checkpoint,
                 self.Game,
                 self.config,
-                self.config.seed + seed,
-                seed,
+                self.config.seed + seed, # seed
+                seed, # worker id
             )
             for seed in range(self.config.num_workers) # 4 ... 3 + num_workers
         ]
+        self.shared_storage_worker.set_info.remote(
+            "terminated_self_play", 
+            [False for _ in range(self.config.num_workers)]
+        )
 
         # Launch workers
         [
@@ -232,6 +240,7 @@ class MuZero:
             self.config.seed + self.config.num_workers,
             -1,
         ) # 3 + num_workers
+        self.shared_storage_worker.set_info.remote("terminated_test_play", False)
         self.test_worker.continuous_self_play.remote(
             self.shared_storage_worker, None, True
         )
@@ -279,27 +288,27 @@ class MuZero:
             while info["training_step"] < self.config.training_steps:
                 info = ray.get(self.shared_storage_worker.get_info.remote(keys))
                 writer.add_scalar(
-                    "1.Total_reward/1.Total_reward",
+                    "1.Test_Play/1.Total_reward",
                     info["total_reward"],
                     counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/2.Mean_value",
+                    "1.Test_Play/2.Mean_value",
                     info["mean_value"],
                     counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/3.Episode_length",
+                    "1.Test_Play/3.Episode_length",
                     info["episode_length"],
                     counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/4.MuZero_reward",
+                    "1.Test_Play/4.MuZero_reward",
                     info["muzero_reward"],
                     counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/5.Opponent_reward",
+                    "1.Test_Play/5.Opponent_reward",
                     info["opponent_reward"],
                     counter,
                 )
@@ -338,29 +347,31 @@ class MuZero:
                 counter += 1
                 time.sleep(0.5)
         except KeyboardInterrupt:
+            print("KeyboardInterrupt!!!!")
+            print("terminate process...")
             pass
-
-        # CHANGED -------------------------------------------------------------------
-        try:
+        finally:
+            # CHANGED -------------------------------------------------------------------
             self.terminate_workers()
-        except:
-            pass
-        # ---------------------------------------------------------------------------
+            print("Terminated workers!!!")
+            # ---------------------------------------------------------------------------
 
-        if self.config.save_model:
-            print("save model!!!")
-            # Persist replay buffer to disk
-            path = self.config.results_path / "replay_buffer.pkl"
-            print(f"\n\nPersisting replay buffer games to disk at {path}")
-            pickle.dump(
-                {
-                    "buffer": self.replay_buffer,
-                    "num_played_games": self.checkpoint["num_played_games"],
-                    "num_played_steps": self.checkpoint["num_played_steps"],
-                    "num_reanalysed_games": self.checkpoint["num_reanalysed_games"],
-                },
-                open(path, "wb"),
-            )
+            if self.config.save_model:
+                print("save model!!!")
+                # Persist replay buffer to disk
+                path = self.config.results_path / "replay_buffer.pkl"
+                print(f"\n\nPersisting replay buffer games to disk at {path}")
+                pickle.dump(
+                    {
+                        "buffer": self.replay_buffer,
+                        "num_played_games": self.checkpoint["num_played_games"],
+                        "num_played_steps": self.checkpoint["num_played_steps"],
+                        "num_reanalysed_games": self.checkpoint["num_reanalysed_games"],
+                    },
+                    open(path, "wb"),
+                )
+
+        
 
     def terminate_workers(self):
         """
@@ -368,20 +379,31 @@ class MuZero:
         """
         if self.shared_storage_worker:
             self.shared_storage_worker.set_info.remote("terminate", True)
+
+        print("\nShutting down workers...")
+        while not all(
+            ray.get(self.shared_storage_worker.get_info.remote("terminated_self_play"))
+        ):
+            time.sleep(2)
+        self.self_play_workers = None
+        while not ray.get(self.shared_storage_worker.get_info.remote("terminated_test_play")):
+            time.sleep(2)
+        self.test_worker = None
+        while not ray.get(self.shared_storage_worker.get_info.remote("terminated_trainer")):
+            time.sleep(2)
+        self.training_worker = None
+
+        if self.shared_storage_worker:
             self.checkpoint = ray.get(
                 self.shared_storage_worker.get_checkpoint.remote()
             )
         if self.replay_buffer_worker:
             self.replay_buffer = ray.get(self.replay_buffer_worker.get_buffer.remote())
 
-        print("\nShutting down workers...")
-
-        self.self_play_workers = None
-        self.test_worker = None
-        self.training_worker = None
         self.reanalyse_worker = None
         self.replay_buffer_worker = None
-        self.shared_storage_worker = None
+        self.shared_storage_worker = None 
+
 
     def test(
         self, render=True, opponent=None, muzero_player=None, num_tests=1, num_gpus=0
@@ -647,7 +669,7 @@ if __name__ == "__main__":
         muzero = MuZero(sys.argv[1], config)
         muzero.train()
     else:
-        print("Version: 2.1.45")
+        print("Version: 2.2.8")
         print("\nWelcome to MuZero! Here's a list of games:")
         # Let user pick a game
         games = [

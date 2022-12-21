@@ -152,8 +152,11 @@ class Trainer:
         ) = batch
 
         # Keep values as scalars for calculating the priorities for the prioritized replay
-        target_value_scalar = numpy.array(target_value, dtype="float32")
-        priorities = numpy.zeros_like(target_value_scalar)
+        # [PAPER INFO] FOR BOARD GAMES, STATE ARE SAMPLED UNIFORMLY.
+        # FIXED ----------------------------------------------------------------------------
+        #target_value_scalar = numpy.array(target_value, dtype="float32")
+        #priorities = numpy.zeros_like(target_value_scalar)
+        # ----------------------------------------------------------------------------------
         
         device = next(self.model.parameters()).device
         if self.config.PER:
@@ -201,7 +204,7 @@ class Trainer:
         for i in range(1, action_batch.shape[1]): # num_unroll_steps
             ## dynamics -> prediction
             value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
-                hidden_state, action_batch[:, i]
+                hidden_state, action_batch[:, i] # action_batch[:,i].shape: (batch, 1)
             )
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
@@ -223,17 +226,20 @@ class Trainer:
         value_loss += current_value_loss
         policy_loss += current_policy_loss
         # Compute priorities for the prioritized replay (See paper appendix Training)
-        pred_value_scalar = (
-            models.support_to_scalar(value, self.config.support_size)
-            .detach()
-            .cpu()
-            .numpy()
-            .squeeze()
-        )
-        priorities[:, 0] = (
-            numpy.abs(pred_value_scalar - target_value_scalar[:, 0])
-            ** self.config.PER_alpha
-        )
+        # [PAPER INFO] FOR BOARD GAMES, STATE ARE SAMPLED UNIFORMLY.
+        # FIXED ----------------------------------------------------------------------------
+        #pred_value_scalar = (
+        #    models.support_to_scalar(value, self.config.support_size)
+        #    .detach()
+        #    .cpu()
+        #    .numpy()
+        #    .squeeze()
+        #)
+        #priorities[:, 0] = (
+        #    numpy.abs(pred_value_scalar - target_value_scalar[:, 0])
+        #    ** self.config.PER_alpha
+        #)
+        # -----------------------------------------------------------------------------------
 
         for i in range(1, len(predictions)):
             value, reward, policy_logits = predictions[i]
@@ -268,17 +274,20 @@ class Trainer:
             policy_loss += current_policy_loss
 
             # Compute priorities for the prioritized replay (See paper appendix Training)
-            pred_value_scalar = (
-                models.support_to_scalar(value, self.config.support_size)
-                .detach()
-                .cpu()
-                .numpy()
-                .squeeze()
-            )
-            priorities[:, i] = (
-                numpy.abs(pred_value_scalar - target_value_scalar[:, i])
-                ** self.config.PER_alpha
-            )
+            # [PAPER INFO] FOR BOARD GAMES, STATE ARE SAMPLED UNIFORMLY.
+            # FIXED -------------------------------------------------------------------------------------
+            #pred_value_scalar = (
+            #    models.support_to_scalar(value, self.config.support_size)
+            #    .detach()
+            #    .cpu()
+            #    .numpy()
+            #    .squeeze()
+            #)
+            #priorities[:, i] = (
+            #    numpy.abs(pred_value_scalar - target_value_scalar[:, i])
+            #    ** self.config.PER_alpha
+            #)
+            # -------------------------------------------------------------------------------------------
 
         # Scale the value loss, paper recommends by 0.25 (See paper appendix Reanalyze)
         loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss
@@ -295,7 +304,7 @@ class Trainer:
         self.training_step += 1
 
         return (
-            priorities,
+            None, #priorities,
             # For log purpose
             loss.item(),
             value_loss.mean().item(),

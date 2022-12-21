@@ -34,6 +34,11 @@ class MuZeroNetwork:
                 config.resnet_fc_policy_layers,
                 config.support_size,
                 config.downsample,
+                # ADDED ------------------------------------------------------------------------------
+                config.reduced_channels_choice,
+                config.resnet_fc_choice_layers,
+                config.num_choice,
+                # ------------------------------------------------------------------------------------
             )
         else:
             raise NotImplementedError(
@@ -207,16 +212,24 @@ def conv3x3(in_channels, out_channels, stride=1):
     return torch.nn.Conv2d(
         in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False
     )
+# Added ------------------------------------------------------------------------------------
+def conv3(in_channels, out_channels):
+    return torch.nn.Conv1d(
+        in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
+    )
+# ------------------------------------------------------------------------------------------
 
 
 # Residual block
 class ResidualBlock(torch.nn.Module):
     def __init__(self, num_channels, stride=1):
         super().__init__()
-        self.conv1 = conv3x3(num_channels, num_channels, stride)
-        self.bn1 = torch.nn.BatchNorm2d(num_channels)
-        self.conv2 = conv3x3(num_channels, num_channels)
-        self.bn2 = torch.nn.BatchNorm2d(num_channels)
+        # FIXED ----------------------------------------------------------------------------
+        self.conv1 = conv3(num_channels, num_channels)
+        self.bn1 = torch.nn.BatchNorm1d(num_channels)
+        self.conv2 = conv3(num_channels, num_channels)
+        self.bn2 = torch.nn.BatchNorm1d(num_channels)
+        # ----------------------------------------------------------------------------------
 
     def forward(self, x):
         out = self.conv1(x)
@@ -304,7 +317,7 @@ class RepresentationNetwork(torch.nn.Module):
         stacked_observations,
         num_blocks,
         num_channels,
-        downsample,
+        downsample, # FALSE
     ):
         super().__init__()
         self.downsample = downsample
@@ -327,11 +340,19 @@ class RepresentationNetwork(torch.nn.Module):
                 )
             else:
                 raise NotImplementedError('downsample should be "resnet" or "CNN".')
-        self.conv = conv3x3(
+        # FIXED -----------------------------------------------------------------------------------
+        # backgammon's obs shape: (batch, 9, 14, 8)
+        self.conv = torch.nn.Conv2d(
             observation_shape[0] * (stacked_observations + 1) + stacked_observations,
             num_channels,
+            kernel_size=(3, observation_shape[2]),
+            stride=1,
+            padding=(1,0),
+            bias=False
         )
-        self.bn = torch.nn.BatchNorm2d(num_channels)
+        # self.conv's output: (batch, num_channels, 14, 1)
+        self.bn = torch.nn.BatchNorm1d(num_channels)
+        # -----------------------------------------------------------------------------------------
         self.resblocks = torch.nn.ModuleList(
             [ResidualBlock(num_channels) for _ in range(num_blocks)]
         )
@@ -340,7 +361,9 @@ class RepresentationNetwork(torch.nn.Module):
         if self.downsample:
             x = self.downsample_net(x)
         else:
-            x = self.conv(x)
+            # backgammon's obs shape: (batch, 9, 14, 8)
+            x = self.conv(x)[:,:,:,0]
+            # x's shape: (batch, 256, 14)
             x = self.bn(x)
             x = torch.nn.functional.relu(x)
 
@@ -360,22 +383,13 @@ class DynamicsNetwork(torch.nn.Module):
         block_output_size_reward,
     ):
         super().__init__()
-        self.conv = conv3x3(num_channels, num_channels - 1)
-        self.bn = torch.nn.BatchNorm2d(num_channels - 1)
-        self.resblocks = torch.nn.ModuleList(
-            [ResidualBlock(num_channels - 1) for _ in range(num_blocks)]
-        )
         # FIXED ------------------------------------------------------------------------------------
-        # self.conv1x1_reward = torch.nn.Conv2d(
-        #    num_channels - 1, reduced_channels_reward, 1
-        #)
-        # self.block_output_size_reward = block_output_size_reward
-        #self.fc = mlp(
-        #    self.block_output_size_reward,
-        #    fc_reward_layers,
-        #    1,
-        #    torch.nn.Tanh
-        #)
+        self.conv = conv3(num_channels, num_channels - 2)
+        self.bn = torch.nn.BatchNorm1d(num_channels - 2)
+        self.resblocks = torch.nn.ModuleList(
+            [ResidualBlock(num_channels - 2) for _ in range(num_blocks)]
+        )
+        # reward process was deleted!!!
         # ------------------------------------------------------------------------------------------
 
     def forward(self, x):
@@ -386,9 +400,6 @@ class DynamicsNetwork(torch.nn.Module):
             x = block(x)
         state = x
         # FIXED ------------------------------------------------------------------------------------
-        # x = self.conv1x1_reward(x)
-        # x = x.view(-1, self.block_output_size_reward)
-        # reward = self.fc(x) # tensor to scalar*batch [-1, 1] (tensor type)
         reward = torch.zeros(len(x), 1).to(x.device)
         # ------------------------------------------------------------------------------------------
         return state, reward
@@ -407,21 +418,23 @@ class PredictionNetwork(torch.nn.Module):
         full_support_size,
         block_output_size_value,
         block_output_size_policy,
+        # ADDED ---------------------------------------------------------------
+        num_choice,
     ):
         super().__init__()
         self.resblocks = torch.nn.ModuleList(
             [ResidualBlock(num_channels) for _ in range(num_blocks)]
         )
 
-        self.conv1x1_value = torch.nn.Conv2d(num_channels, reduced_channels_value, 1)
-        self.conv1x1_policy = torch.nn.Conv2d(num_channels, reduced_channels_policy, 1)
         self.block_output_size_value = block_output_size_value
         self.block_output_size_policy = block_output_size_policy
         # FIXED --------------------------------------------------------------------------------------
+        self.conv1_value = torch.nn.Conv1d(num_channels, reduced_channels_value, kernel_size=1)
+        self.conv1_policy = torch.nn.Conv1d(num_channels, reduced_channels_policy, kernel_size=1)
         self.fc_value = mlp(
             self.block_output_size_value, 
             fc_value_layers, 
-            1, 
+            1,
             torch.nn.Tanh
         )
         # --------------------------------------------------------------------------------------------
@@ -434,8 +447,8 @@ class PredictionNetwork(torch.nn.Module):
     def forward(self, x):
         for block in self.resblocks:
             x = block(x)
-        value = self.conv1x1_value(x)
-        policy = self.conv1x1_policy(x)
+        value = self.conv1_value(x)
+        policy = self.conv1_policy(x)
         value = value.view(-1, self.block_output_size_value)
         policy = policy.view(-1, self.block_output_size_policy)
         # FIXED -----------------------------------------------------------------------------------------
@@ -461,39 +474,52 @@ class MuZeroResidualNetwork(AbstractNetwork):
         fc_policy_layers,
         support_size,
         downsample,
+        # ADDED --------------------------------------------------------------------------
+        reduced_channels_choice,
+        fc_choice_layers,
+        num_choice,
+        # --------------------------------------------------------------------------------
     ):
         super().__init__()
         self.action_space_size = action_space_size
         self.full_support_size = 2 * support_size + 1
-        block_output_size_reward = ( # ?????????????????????????????????????????????????????????????????
-            (
-                reduced_channels_reward
-                * math.ceil(observation_shape[1] / 16)
-                * math.ceil(observation_shape[2] / 16)
-            )
-            if downsample
-            else (reduced_channels_reward * observation_shape[1] * observation_shape[2])
-        )
+        # block_output_size_reward = (
+        #    (
+        #        reduced_channels_reward
+        #        * math.ceil(observation_shape[1] / 16)
+        #        * math.ceil(observation_shape[2] / 16)
+        #    )
+        #    if downsample
+        #    else (reduced_channels_reward * observation_shape[1] * observation_shape[2])
+        #)
 
-        block_output_size_value = ( # ????????????????????????????????????????????????????????????????????
+        block_output_size_value = (
             (
                 reduced_channels_value
                 * math.ceil(observation_shape[1] / 16)
                 * math.ceil(observation_shape[2] / 16)
             )
             if downsample
-            else (reduced_channels_value * observation_shape[1] * observation_shape[2])
+            # FIXED ---------------------------------------------------------------------------------------------
+            else (reduced_channels_value * observation_shape[1])
+            # ---------------------------------------------------------------------------------------------------
         )
 
-        block_output_size_policy = ( # ???????????????????????????????????????????????????????????????????
+        block_output_size_policy = (
             (
                 reduced_channels_policy
                 * math.ceil(observation_shape[1] / 16)
                 * math.ceil(observation_shape[2] / 16)
             )
             if downsample
-            else (reduced_channels_policy * observation_shape[1] * observation_shape[2])
+            # FIXED ---------------------------------------------------------------------------------------------
+            else (reduced_channels_policy * observation_shape[1])
+            # ---------------------------------------------------------------------------------------------------
         )
+
+        # ADDED -------------------------------------------------------------------------------------------------
+        block_output_size_choice = reduced_channels_choice * observation_shape[1]
+        # -------------------------------------------------------------------------------------------------------
 
         self.representation_network = torch.nn.DataParallel(
             RepresentationNetwork(
@@ -508,11 +534,11 @@ class MuZeroResidualNetwork(AbstractNetwork):
         self.dynamics_network = torch.nn.DataParallel(
             DynamicsNetwork(
                 num_blocks,
-                num_channels + 1,
+                num_channels + 2, # FIXED ------------------------------------------------------
                 reduced_channels_reward,
                 fc_reward_layers,
                 self.full_support_size,
-                block_output_size_reward,
+                None, # block_output_size_reward,
             )
         )
 
@@ -528,6 +554,11 @@ class MuZeroResidualNetwork(AbstractNetwork):
                 self.full_support_size,
                 block_output_size_value,
                 block_output_size_policy,
+                # ADDED --------------------------------------------------------------------------
+                reduced_channels_choice,
+                block_output_size_choice,
+                num_choice
+                # --------------------------------------------------------------------------------
             )
         )
 
@@ -537,73 +568,40 @@ class MuZeroResidualNetwork(AbstractNetwork):
 
     def representation(self, observation):
         encoded_state = self.representation_network(observation)
-
+        # encoded_state's shape: (batch, channels, 14)
         # Scale encoded state between [0, 1] (See appendix paper Training)
-        min_encoded_state = (
-            encoded_state.view(
-                -1,
-                encoded_state.shape[1],
-                encoded_state.shape[2] * encoded_state.shape[3],
-            )
-            .min(2, keepdim=True)[0]
-            .unsqueeze(-1)
-        )
-        max_encoded_state = (
-            encoded_state.view(
-                -1,
-                encoded_state.shape[1],
-                encoded_state.shape[2] * encoded_state.shape[3],
-            )
-            .max(2, keepdim=True)[0]
-            .unsqueeze(-1)
-        )
-        scale_encoded_state = max_encoded_state - min_encoded_state
+        # FIXED ----------------------------------------------------------------------------------------
+        min_encoded_state = encoded_state.min(2, keepdim=True)[0] # shape: (batch, channels, 1)
+        max_encoded_state = encoded_state.max(2, keepdim=True)[0] # shape: (batch, channels, 1)
+        # ----------------------------------------------------------------------------------------------
+        scale_encoded_state = max_encoded_state - min_encoded_state # shape: (batch, channels, 1)
         scale_encoded_state[scale_encoded_state < 1e-5] += 1e-5
         encoded_state_normalized = (
             encoded_state - min_encoded_state
         ) / scale_encoded_state
-        return encoded_state_normalized
+        return encoded_state_normalized # (batch, channels, 14)
 
     def dynamics(self, encoded_state, action):
         # Stack encoded_state with a game specific one hot encoded action (See paper appendix Network Architecture)
+        # encoded_state's shape: (batch, channels, 14)
+        # action's shape: (batch, 1)
+        # FIXED ---------------------------------------------------------------------------
+        points = encoded_state.shape[2]
         action_one_hot = (
-            torch.ones(
-                (
-                    encoded_state.shape[0],
-                    1,
-                    encoded_state.shape[2],
-                    encoded_state.shape[3],
-                )
-            )
-            .to(action.device)
-            .float()
+            torch.zeros((action.shape[0], 2*points+1)).to(action.device) # (batch, 29)
+            .scatter(dim=1, index=action, value=1)[:,1:] # (batch, 28)
+            .view((action.shape[0], 2, points)) # (batch, 2, 14)
         )
-        action_one_hot = (
-            action[:, :, None, None] * action_one_hot / self.action_space_size
-        )
-        x = torch.cat((encoded_state, action_one_hot), dim=1)
+        x = torch.cat((encoded_state, action_one_hot), dim=1) # shape: (batch, channels+2, 14)
+        # -----------------------------------------------------------------------------------
         next_encoded_state, reward = self.dynamics_network(x)
 
         # Scale encoded state between [0, 1] (See paper appendix Training)
-        min_next_encoded_state = (
-            next_encoded_state.view(
-                -1,
-                next_encoded_state.shape[1],
-                next_encoded_state.shape[2] * next_encoded_state.shape[3],
-            )
-            .min(2, keepdim=True)[0]
-            .unsqueeze(-1)
-        )
-        max_next_encoded_state = (
-            next_encoded_state.view(
-                -1,
-                next_encoded_state.shape[1],
-                next_encoded_state.shape[2] * next_encoded_state.shape[3],
-            )
-            .max(2, keepdim=True)[0]
-            .unsqueeze(-1)
-        )
-        scale_next_encoded_state = max_next_encoded_state - min_next_encoded_state
+        # FIXED ----------------------------------------------------------------------------
+        min_next_encoded_state = next_encoded_state.min(2, keepdim=True)[0] # shape: (batch, channels, 1)
+        max_next_encoded_state = next_encoded_state.max(2, keepdim=True)[0] # shape: (batch, channels, 1)
+        # ----------------------------------------------------------------------------------
+        scale_next_encoded_state = max_next_encoded_state - min_next_encoded_state # shape: (batch, channels, 1)
         scale_next_encoded_state[scale_next_encoded_state < 1e-5] += 1e-5
         next_encoded_state_normalized = (
             next_encoded_state - min_next_encoded_state
@@ -611,6 +609,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
         return next_encoded_state_normalized, reward
     # representation and prediction
     def initial_inference(self, observation):
+        # observation shape: (batch, channels, 14)
         encoded_state = self.representation(observation)
         policy_logits, value = self.prediction(encoded_state)
         # reward equal to 0 for consistency

@@ -12,9 +12,9 @@ INITIAL_POSITION = np.array(
 # Player_0: right to left
 # Player_1: left to right
 
-ACTION_SPACE = 1 + (POINTS + 1) * 2
-# [skip|POINTS|bar|POINTS|bar]
-#       (left die) (right die)
+ACTION_SPACE = 1 + (POINTS + 2) * 2
+# [skip|bar|POINTS|bar|bar|POINTS|bar]
+#       (left die)     (right die)
 
 # observation width/height/channels
 OBS_WIDTH = POINTS + 2 # [b/o][points][o/b]

@@ -349,6 +349,7 @@ class MCTS:
             root_predicted_value = root_predicted_value[0,0].item()
             reward = reward[0,0].item()
             # --------------------------------------------------------------------------------------------
+            # policy_logits.shape: (1,29)
             assert (
                 legal_actions
             ), f"Legal actions should not be an empty array. Got {legal_actions}."
@@ -397,6 +398,7 @@ class MCTS:
                 parent.hidden_state,
                 torch.tensor([[action]]).to(parent.hidden_state.device),
             )
+            # policy_logits.shape: (1,29)
             # FIXED ----------------------------------------------------------------------------------
             value = value[0,0].item()
             reward = reward[0,0].item()
@@ -427,6 +429,11 @@ class MCTS:
             self.ucb_score(node, child, min_max_stats)
             for action, child in node.children.items()
         )
+        assert len([
+                action
+                for action, child in node.children.items()
+                if self.ucb_score(node, child, min_max_stats) == max_ucb
+                ]) > 0, f"node.children.items(): {[action for action, _ in node.children.items()]}\n{[child for _, child in node.children.items()]}"
         action = numpy.random.choice(
             [
                 action
@@ -459,6 +466,7 @@ class MCTS:
             )
         else:
             value_score = 0
+        assert prior_score + value_score or prior_score + value_score == 0, f"ASSERT UCB_SCORE\n{prior_score}\n{value_score}"
 
         return prior_score + value_score
 

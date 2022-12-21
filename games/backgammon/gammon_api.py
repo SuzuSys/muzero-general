@@ -51,16 +51,39 @@ class BackGammon:
             List[int]: an array of integers, subset of the action space
         """
         legal_actions: List[int] = self.gammon.get_legal_actions()
-        if self.turn == Player.ONE and legal_actions != [0]:
-            for (i, action) in enumerate(legal_actions):
-                if action <= POINTS + 1:
-                    legal_actions[i] = self.invert(
-                        action, 1, POINTS + 1
-                    )
-                else:
-                    legal_actions[i] = self.invert(
-                        action, POINTS + 2, (POINTS + 1) * 2
-                    )
+        if legal_actions != [0]:
+            if self.turn == Player.ZERO:
+                for (i, action) in enumerate(legal_actions):
+                    # in  [skip]   [POINTS][bar]   [POINTS][bar]
+                    # out [skip][/][POINTS][bar][/][POINTS][bar]
+                    # [0]   [1-12][13]   [14-25][26]
+                    action += 1
+                    # [0][/][2-13][14]   [15-26][27]
+                    if action > POINTS + 2:
+                        action += 1
+                    # [0][/][2-13][14][/][16-27][28]
+                    legal_actions[i] = action
+            else:
+                for (i, action) in enumerate(legal_actions):
+                    # in  [skip][POINTS][bar][POINTS][bar]
+                    # out [skip][bar][POINTS][bar][POINTS]
+                    if action <= POINTS + 1:
+                        action = self.invert(
+                            action, 1, POINTS + 1
+                        )
+                    else:
+                        action = self.invert(
+                            action, POINTS + 2, (POINTS + 1) * 2
+                        )
+                    # in  [skip][bar][POINTS]   [bar][POINTS]
+                    # out [skip][bar][POINTS][/][bar][POINTS][/]
+                    # [0][1][2-13]   [14][15-26]
+                    if action > POINTS + 1:
+                        action += 1
+                    # [0][1][2-13][/][15][16-27][/]
+                    legal_actions[i] = action
+
+
         return legal_actions
     
     def action(self, action: int) -> bool:
@@ -73,15 +96,35 @@ class BackGammon:
         Returns:
             bool: game has ended
         """
-        if self.turn == Player.ONE and action > 0:
-            if action <= POINTS + 1:
-                action = self.invert(
-                    action, 1, POINTS + 1
-                )
+        if action > 0:
+            if self.turn == Player.ZERO:
+                # in  [skip][/][POINTS][bar][/][POINTS][bar]
+                # out [skip]   [POINTS][bar]   [POINTS][bar]
+                # [0][/][2-13][14][/][16-27][28]
+                if action > POINTS + 3:
+                    action -= 1
+                # [0][/][2-13][14]   [15-26][27]
+                action -= 1
+                # [0]   [1-12][13]   [14-25][26]
             else:
-                action = self.invert(
-                    action, POINTS + 2, (POINTS + 1) * 2
-                )
+                # in  [skip][bar][POINTS][/][bar][POINTS][/]
+                # out [skip][bar][POINTS]   [bar][POINTS]
+                # [0][1][2-13][/][15][16-27][/]
+                if action > POINTS + 2:
+                    action -= 1
+                # [0][1][2-13]   [14][15-26]
+
+                # in  [skip][bar][POINTS][bar][POINTS]
+                # out [skip][POINTS][bar][POINTS][bar]
+                if action <= POINTS + 1:
+                    action = self.invert(
+                        action, 1, POINTS + 1
+                    )
+                else:
+                    action = self.invert(
+                        action, POINTS + 2, (POINTS + 1) * 2
+                    )
+
         match_state: MatchStateType = self.gammon.action(action)
         if match_state == MatchState.NOTHING:
             return False

@@ -117,6 +117,8 @@ class MuZero:
             "value_loss": 0,
             "reward_loss": 0,
             "policy_loss": 0,
+            "choice_loss": 0,
+            "to_play_loss": 0,
             "num_played_games": 0,
             "num_played_steps": 0,
             "num_reanalysed_games": 0,
@@ -279,6 +281,8 @@ class MuZero:
             "value_loss",
             "reward_loss",
             "policy_loss",
+            "choice_loss",
+            "to_play_loss",
             "num_played_games",
             "num_played_steps",
             "num_reanalysed_games",
@@ -340,6 +344,8 @@ class MuZero:
                 writer.add_scalar("3.Loss/Value_loss", info["value_loss"], counter)
                 writer.add_scalar("3.Loss/Reward_loss", info["reward_loss"], counter)
                 writer.add_scalar("3.Loss/Policy_loss", info["policy_loss"], counter)
+                writer.add_scalar("3.Loss/Choice_loss", info["choice_loss"], counter)
+                writer.add_scalar("3.Loss/To_play_loss", info["to_play_loss"], counter)
                 print(
                     f'Last test reward: {info["total_reward"]:.2f}. Training step: {info["training_step"]}/{self.config.training_steps}. Played games: {info["num_played_games"]}. Loss: {info["total_loss"]:.2f}',
                     end="\r",
@@ -669,7 +675,7 @@ if __name__ == "__main__":
         muzero = MuZero(sys.argv[1], config)
         muzero.train()
     else:
-        print("Version: 2.4.29")
+        print("Version: 3.0.0")
         print("\nWelcome to MuZero! Here's a list of games:")
         # Let user pick a game
         games = [

@@ -81,8 +81,9 @@ class ReplayBuffer:
             reward_batch,
             value_batch,
             policy_batch,
+            to_play_batch,
             gradient_scale_batch,
-        ) = ([], [], [], [], [], [], [])
+        ) = ([], [], [], [], [], [], [], [])
         weight_batch = [] if self.config.PER else None
 
         for game_id, game_history, game_prob in self.sample_n_games(
@@ -90,22 +91,24 @@ class ReplayBuffer:
         ):
             game_pos, pos_prob = self.sample_position(game_history)
 
-            values, rewards, policies, actions = self.make_target(
+            values, rewards, policies, actions, to_play, observation = self.make_target(
                 game_history, game_pos
             )
 
             index_batch.append([game_id, game_pos])
-            observation_batch.append(
-                game_history.get_stacked_observations(
-                    game_pos,
-                    self.config.stacked_observations,
-                    len(self.config.action_space),
-                )
-            )
+            #observation_batch.append(
+            #    game_history.get_stacked_observations(
+            #        game_pos,
+            #        self.config.stacked_observations,
+            #        len(self.config.action_space),
+            #    )
+            #)
             action_batch.append(actions)
             value_batch.append(values)
             reward_batch.append(rewards)
             policy_batch.append(policies)
+            to_play_batch.append(to_play)
+            observation_batch.append(observation)
             gradient_scale_batch.append(
                 [
                     min(
@@ -123,11 +126,12 @@ class ReplayBuffer:
                 weight_batch
             )
 
-        # observation_batch: batch, channels, height, width
+        # observation_batch: batch, num_unroll_steps+1, channels, height, width
         # action_batch: batch, num_unroll_steps+1
         # value_batch: batch, num_unroll_steps+1
         # reward_batch: batch, num_unroll_steps+1
         # policy_batch: batch, num_unroll_steps+1, len(action_space)
+        # to_play_batch: batch, num_unroll_steps+1
         # weight_batch: batch
         # gradient_scale_batch: batch, num_unroll_steps+1
         return (
@@ -138,6 +142,7 @@ class ReplayBuffer:
                 value_batch,
                 reward_batch,
                 policy_batch,
+                to_play_batch,
                 weight_batch,
                 gradient_scale_batch,
             ),
@@ -290,17 +295,27 @@ class ReplayBuffer:
         """
         Generate targets for every unroll steps.
         """
-        target_values, target_rewards, target_policies, actions = [], [], [], []
+        target_values, target_rewards, target_policies, actions, to_play, observation = [], [], [], [], [], []
         for current_index in range(
             state_index, state_index + self.config.num_unroll_steps + 1
         ):
             value = self.compute_target_value(game_history, current_index)
+            clincher = None
+            last_observation = None
 
             if current_index < len(game_history.root_values):
                 target_values.append(value)
                 target_rewards.append(game_history.reward_history[current_index])
                 target_policies.append(game_history.child_visits[current_index])
                 actions.append(game_history.action_history[current_index])
+                to_play.append(game_history.to_play_history[current_index])
+                observation.append(
+                    game_history.get_stacked_observations(
+                        current_index,
+                        self.config.stacked_observations,
+                        len(self.config.action_space),
+                    )
+                )
             elif current_index == len(game_history.root_values):
                 target_values.append(0)
                 target_rewards.append(game_history.reward_history[current_index])
@@ -312,6 +327,14 @@ class ReplayBuffer:
                     ]
                 )
                 actions.append(game_history.action_history[current_index])
+                clincher = game_history.to_play_history[current_index - 1]
+                to_play.append(clincher)
+                last_observation = game_history.get_stacked_observations(
+                    current_index,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+                observation.append(last_observation)
             else:
                 # States past the end of games are treated as absorbing states
                 target_values.append(0)
@@ -324,8 +347,10 @@ class ReplayBuffer:
                     ]
                 )
                 actions.append(numpy.random.choice(self.config.action_space))
+                to_play.append(clincher)
+                observation.append(last_observation)
 
-        return target_values, target_rewards, target_policies, actions
+        return target_values, target_rewards, target_policies, actions, to_play, observation
 
 
 @ray.remote

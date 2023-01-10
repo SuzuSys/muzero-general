@@ -38,6 +38,8 @@ class MuZeroNetwork:
                 config.reduced_channels_choice,
                 config.resnet_fc_choice_layers,
                 config.num_choice,
+                config.reduced_channels_player,
+                config.resnet_fc_player_layers,
                 # ------------------------------------------------------------------------------------
             )
         else:
@@ -377,20 +379,33 @@ class DynamicsNetwork(torch.nn.Module):
         self,
         num_blocks,
         num_channels,
+        increase_channels,
         reduced_channels_reward,
         fc_reward_layers,
-        full_support_size,
         block_output_size_reward,
+        reduced_channels_player,
+        fc_player_layers,
+        block_output_size_player,
+
     ):
         super().__init__()
         # FIXED ------------------------------------------------------------------------------------
-        self.conv = conv3(num_channels, num_channels - 2)
-        self.bn = torch.nn.BatchNorm1d(num_channels - 2)
+        self.conv = conv3(num_channels + increase_channels, num_channels)
+        self.bn = torch.nn.BatchNorm1d(num_channels)
         self.resblocks = torch.nn.ModuleList(
-            [ResidualBlock(num_channels - 2) for _ in range(num_blocks)]
+            [ResidualBlock(num_channels) for _ in range(num_blocks)]
         )
         # reward process was deleted!!!
         # ------------------------------------------------------------------------------------------
+        
+        self.conv1_player = torch.nn.Conv1d(num_channels, reduced_channels_player, kernel_size=1)
+        self.block_output_size_player = block_output_size_player
+        self.fc_player = mlp(
+            self.block_output_size_player,
+            fc_player_layers,
+            1,
+            torch.nn.Sigmoid
+        )
 
     def forward(self, x):
         x = self.conv(x)
@@ -402,7 +417,12 @@ class DynamicsNetwork(torch.nn.Module):
         # FIXED ------------------------------------------------------------------------------------
         reward = torch.zeros(len(x), 1).to(x.device)
         # ------------------------------------------------------------------------------------------
-        return state, reward
+        # ADDED ------------------------------------------------------------------------------------
+        player = self.conv1_player(x)
+        player = player.view(-1, self.block_output_size_player)
+        player = self.fc_player(player) # tensor to scalar*batch [0, 1] (tensor type)
+        # ------------------------------------------------------------------------------------------
+        return state, reward, player
 
 
 class PredictionNetwork(torch.nn.Module):
@@ -419,7 +439,11 @@ class PredictionNetwork(torch.nn.Module):
         block_output_size_value,
         block_output_size_policy,
         # ADDED ---------------------------------------------------------------
-        num_choice,
+        reduced_channels_choice,
+        block_output_size_choice,
+        fc_choice_layers,
+        num_choice
+        # ----------------------------------------------------------------------
     ):
         super().__init__()
         self.resblocks = torch.nn.ModuleList(
@@ -428,14 +452,16 @@ class PredictionNetwork(torch.nn.Module):
 
         self.block_output_size_value = block_output_size_value
         self.block_output_size_policy = block_output_size_policy
+        self.block_output_size_choice = block_output_size_choice
         # FIXED --------------------------------------------------------------------------------------
         self.conv1_value = torch.nn.Conv1d(num_channels, reduced_channels_value, kernel_size=1)
         self.conv1_policy = torch.nn.Conv1d(num_channels, reduced_channels_policy, kernel_size=1)
+        self.conv1_choice = torch.nn.Conv1d(num_channels, reduced_channels_choice, kernel_size=1)
         self.fc_value = mlp(
             self.block_output_size_value, 
             fc_value_layers, 
             1,
-            torch.nn.Tanh
+            torch.nn.Sigmoid
         )
         # --------------------------------------------------------------------------------------------
         self.fc_policy = mlp(
@@ -443,19 +469,29 @@ class PredictionNetwork(torch.nn.Module):
             fc_policy_layers,
             action_space_size,
         )
+        # ADDED --------------------------------------------------------------------------------------
+        self.fc_choice = mlp(
+            self.block_output_size_choice,
+            fc_choice_layers,
+            num_choice
+        )
+        # --------------------------------------------------------------------------------------------
 
     def forward(self, x):
         for block in self.resblocks:
             x = block(x)
         value = self.conv1_value(x)
         policy = self.conv1_policy(x)
+        choice = self.conv1_choice(x) # ADDED --------------------------------------------------------
         value = value.view(-1, self.block_output_size_value)
         policy = policy.view(-1, self.block_output_size_policy)
+        choice = choice.view(-1, self.block_output_size_choice) # ADDED ------------------------------
         # FIXED -----------------------------------------------------------------------------------------
-        value = self.fc_value(value) # tensor to scalar*batch [-1, 1] (tensor type)
+        value = self.fc_value(value) # tensor to scalar*batch [0, 1] (tensor type)
         # -----------------------------------------------------------------------------------------------
         policy = self.fc_policy(policy)
-        return policy, value
+        choice = self.fc_choice(choice)
+        return policy, value, choice
 
 
 class MuZeroResidualNetwork(AbstractNetwork):
@@ -478,6 +514,8 @@ class MuZeroResidualNetwork(AbstractNetwork):
         reduced_channels_choice,
         fc_choice_layers,
         num_choice,
+        reduced_channels_player,
+        fc_player_layers,
         # --------------------------------------------------------------------------------
     ):
         super().__init__()
@@ -492,6 +530,8 @@ class MuZeroResidualNetwork(AbstractNetwork):
         #    if downsample
         #    else (reduced_channels_reward * observation_shape[1] * observation_shape[2])
         #)
+
+        self.num_choice = num_choice # ADDED ---------------------------------------------
 
         block_output_size_value = (
             (
@@ -521,6 +561,8 @@ class MuZeroResidualNetwork(AbstractNetwork):
         block_output_size_choice = reduced_channels_choice * observation_shape[1]
         # -------------------------------------------------------------------------------------------------------
 
+        block_output_size_player = reduced_channels_player * observation_shape[1]
+
         self.representation_network = torch.nn.DataParallel(
             RepresentationNetwork(
                 observation_shape,
@@ -534,11 +576,14 @@ class MuZeroResidualNetwork(AbstractNetwork):
         self.dynamics_network = torch.nn.DataParallel(
             DynamicsNetwork(
                 num_blocks,
-                num_channels + 2, # FIXED ------------------------------------------------------
+                num_channels, # FIXED ------------------------------------------------------
+                2 + self.num_choice,
                 reduced_channels_reward,
                 fc_reward_layers,
-                self.full_support_size,
-                None, # block_output_size_reward,
+                None,
+                reduced_channels_player,
+                fc_player_layers,
+                block_output_size_player,
             )
         )
 
@@ -557,14 +602,15 @@ class MuZeroResidualNetwork(AbstractNetwork):
                 # ADDED --------------------------------------------------------------------------
                 reduced_channels_choice,
                 block_output_size_choice,
+                fc_choice_layers,
                 num_choice
                 # --------------------------------------------------------------------------------
             )
         )
 
     def prediction(self, encoded_state):
-        policy, value = self.prediction_network(encoded_state)
-        return policy, value
+        policy, value, choice = self.prediction_network(encoded_state)
+        return policy, value, choice
 
     def representation(self, observation):
         encoded_state = self.representation_network(observation)
@@ -581,10 +627,11 @@ class MuZeroResidualNetwork(AbstractNetwork):
         ) / scale_encoded_state
         return encoded_state_normalized # (batch, channels, 14)
 
-    def dynamics(self, encoded_state, action):
+    def dynamics(self, encoded_state, action, choice):
         # Stack encoded_state with a game specific one hot encoded action (See paper appendix Network Architecture)
         # encoded_state's shape: (batch, channels, 14)
         # action's shape: (batch, 1)
+        # choice's shape: (batch, 1)
         # FIXED ---------------------------------------------------------------------------
         points = encoded_state.shape[2]
         action_one_hot = (
@@ -592,9 +639,15 @@ class MuZeroResidualNetwork(AbstractNetwork):
             .scatter(dim=1, index=action, value=1)[:,1:] # (batch, 28)
             .view((action.shape[0], 2, points)) # (batch, 2, 14)
         )
-        x = torch.cat((encoded_state, action_one_hot), dim=1) # shape: (batch, channels+2, 14)
+        choice_one_hot = (
+            torch.zeros((choice.shape[0], self.num_choice)).to(action.device) # (batch, num_choice)
+            .scatter(dim=1, index=choice, value=1) # (batch, num_choice)
+            .unsqueeze(2) # (batch, num_choice, 1)
+            .expand(-1, -1, points) # (batch, num_choice, 14)
+        )
+        x = torch.cat((encoded_state, action_one_hot, choice_one_hot), dim=1) # shape: (batch, channels+2+num_choice, 14)
         # -----------------------------------------------------------------------------------
-        next_encoded_state, reward = self.dynamics_network(x)
+        next_encoded_state, reward, player = self.dynamics_network(x)
 
         # Scale encoded state between [0, 1] (See paper appendix Training)
         # FIXED ----------------------------------------------------------------------------
@@ -606,12 +659,12 @@ class MuZeroResidualNetwork(AbstractNetwork):
         next_encoded_state_normalized = (
             next_encoded_state - min_next_encoded_state
         ) / scale_next_encoded_state
-        return next_encoded_state_normalized, reward
+        return next_encoded_state_normalized, reward, player # tensor to scalar*batch [0, 1] (tensor type)
     # representation and prediction
     def initial_inference(self, observation):
         # observation shape: (batch, channels, 14)
         encoded_state = self.representation(observation)
-        policy_logits, value = self.prediction(encoded_state)
+        policy_logits, value, choice_logits = self.prediction(encoded_state)
         # reward equal to 0 for consistency
         # FIXED --------------------------------------------------------------------------------------
         reward = torch.zeros(len(observation),1).to(observation.device)
@@ -619,15 +672,22 @@ class MuZeroResidualNetwork(AbstractNetwork):
         return (
             value, # scalar
             reward, # scalar
-            policy_logits,
+            policy_logits, # (1, 29)
             encoded_state,
+            choice_logits # (1,10) # ADDED --------------------------------------------------------------------
         )
     # dynamics and prediction
-    def recurrent_inference(self, encoded_state, action):
-        next_encoded_state, reward = self.dynamics(encoded_state, action)
-        policy_logits, value = self.prediction(next_encoded_state)
-        return value, reward, policy_logits, next_encoded_state
-
+    def recurrent_inference(self, encoded_state, action, choice):
+        next_encoded_state, reward, player = self.dynamics(encoded_state, action, choice)
+        policy_logits, value, choice_logits = self.prediction(next_encoded_state)
+        return (
+            value, 
+            reward, 
+            policy_logits, 
+            next_encoded_state, 
+            choice_logits, 
+            player
+        )
 
 ########### End ResNet ###########
 ##################################

@@ -53,13 +53,13 @@ class SelfPlay:
             if not test_mode:
                 
                 game_history = self.play_game(
-                    self.config.visit_softmax_temperature_fn(
+                    temperature=self.config.visit_softmax_temperature_fn(
                         trained_steps=io_training_step # changed
                     ),
-                    self.config.temperature_threshold,
-                    True,
-                    "self",
-                    0,
+                    temperature_threshold=self.config.temperature_threshold,
+                    render=True,
+                    opponent="self",
+                    muzero_player=0,
                 )
                 print('finished play_game.')
                 replay_buffer.save_game.remote(game_history, shared_storage)
@@ -73,11 +73,11 @@ class SelfPlay:
             else:
                 # Take the best action (no exploration) in test mode
                 game_history = self.play_game(
-                    0,
-                    self.config.temperature_threshold,
-                    False,
-                    "self" if len(self.config.players) == 1 else self.config.opponent,
-                    self.config.muzero_player,
+                    temperature=0,
+                    temperature_threshold=self.config.temperature_threshold,
+                    render=False,
+                    opponent="self" if len(self.config.players) == 1 else self.config.opponent,
+                    muzero_player=self.config.muzero_player,
                 )
 
                 # Save to the shared storage
@@ -331,7 +331,7 @@ class MCTS:
             root = override_root_with
             root_predicted_value = None
         else:
-            root = Node(0)
+            root = ChoiceNode(0)
             observation = (
                 torch.tensor(observation)
                 .float()
@@ -340,16 +340,17 @@ class MCTS:
             )
             # initial_inference は representation と prediction を含む
             (
-                root_predicted_value, # scalar [-1, 1]
-                reward, # scalar [-1, 1]
-                policy_logits,
+                root_predicted_value, # vector (1, 1), domain:[0, 1] (tensor type)
+                reward, # vector (1, 1), value:0 (tensor type)
+                policy_logits, # vector (1, config.action_space), domain: [NOT YET SOFTMAXED] (tensor type)
                 hidden_state,
+                choice_logits, # vector (1, config.num_choice), domain: [NOT YET SOFTMAXED] (tensor type) # ADDED -------------------------------------------------------------------
             ) = model.initial_inference(observation)
             # FIXED --------------------------------------------------------------------------------------
-            root_predicted_value = root_predicted_value[0,0].item()
-            reward = reward[0,0].item()
+            root_predicted_value = root_predicted_value[0,0].item() # tensor to scalar
+            reward = reward[0,0].item() # tensor to scalar
             # --------------------------------------------------------------------------------------------
-            # policy_logits.shape: (1,29)
+            
             assert (
                 legal_actions
             ), f"Legal actions should not be an empty array. Got {legal_actions}."
@@ -357,13 +358,16 @@ class MCTS:
                 set(self.config.action_space)
             ), "Legal actions should be a subset of the action space."
             root.expand(
-                legal_actions,
                 to_play,
-                reward, #  scalar [-1, 1]
+                reward,
+                legal_actions,
                 policy_logits,
                 hidden_state,
+                self.config.num_choice,
+                choice_logits,
             )
-
+        # add exploration_noise for noise
+        # do not add noise for choice
         if add_exploration_noise:
             root.add_exploration_noise(
                 dirichlet_alpha=self.config.root_dirichlet_alpha,
@@ -374,44 +378,65 @@ class MCTS:
 
         max_tree_depth = 0
         for _ in range(self.config.num_simulations):
-            virtual_to_play = to_play
-            node = root
-            search_path = [node]
+            # virtual_to_play = to_play
+            choice_node = root
+            search_path_choiced_node = [choice_node]
+            search_path_actioned_node = []
             current_tree_depth = 0
 
-            while node.expanded():
+            while choice_node.expanded():
                 current_tree_depth += 1
-                action, node = self.select_child(node, min_max_stats)
-                search_path.append(node)
+                action, action_node = self.select_action_child(choice_node, min_max_stats)
+                search_path_actioned_node.append(action_node)
+                choice, choiced_node = self.select_choice_child(action_node)
+                search_path_choiced_node.append(choiced_node)
 
                 # Players play turn by turn
-                if virtual_to_play + 1 < len(self.config.players):
-                    virtual_to_play = self.config.players[virtual_to_play + 1]
-                else:
-                    virtual_to_play = self.config.players[0]
+                #if virtual_to_play + 1 < len(self.config.players):
+                #    virtual_to_play = self.config.players[virtual_to_play + 1]
+                #else:
+                #    virtual_to_play = self.config.players[0]
 
             # Inside the search tree we use the dynamics function to obtain the next hidden
             # state given an action and the previous hidden state
-            parent = search_path[-2]
+            parent_choice = search_path_choiced_node[-2]
             # recurrent_interface は gynamics と prediction を含む
-            value, reward, policy_logits, hidden_state = model.recurrent_inference(
-                parent.hidden_state,
-                torch.tensor([[action]]).to(parent.hidden_state.device),
+            # value, reward, policy_logits, next_encoded_state, choice_logits, player
+            ( 
+                value, 
+                reward, 
+                policy_logits, 
+                hidden_state, 
+                choice_logits, 
+                to_play_logits
+            ) = model.recurrent_inference(
+                parent_choice.hidden_state,
+                torch.tensor([[action]]).to(parent_choice.hidden_state.device),
+                torch.tensor([[choice]]).to(parent_choice.hidden_state.device)
             )
             # policy_logits.shape: (1,29)
             # FIXED ----------------------------------------------------------------------------------
-            value = value[0,0].item()
+            value = value[0,0].item() # scalar [0,1]
             reward = reward[0,0].item()
+
+            ## ADDED -----------------------------------------------------------------------------------
+            ## PLAYER CATEGORIZE
+            virtual_to_play = to_play_logits[0,0].item() # scalar [0, 1]
+            virtual_to_play = 1 if virtual_to_play > 0.5 else 0
+            ## ----------------------------------------------------------------------------------------
             # ----------------------------------------------------------------------------------------
-            node.expand(
-                self.config.action_space,
+
+            choice_node.expand(
                 virtual_to_play,
-                reward, # scalar [-1, 1]
+                reward,
+                self.config.action_space,
                 policy_logits,
                 hidden_state,
+                self.config.num_choice,
+                choice_logits,
             )
 
-            self.backpropagate(search_path, value, virtual_to_play, min_max_stats)
+            self.backpropagate(search_path_actioned_node, search_path_choiced_node, value, virtual_to_play, min_max_stats)
 
             max_tree_depth = max(max_tree_depth, current_tree_depth)
 
@@ -420,49 +445,70 @@ class MCTS:
             "root_predicted_value": root_predicted_value,
         }
         return root, extra_info
-
-    def select_child(self, node, min_max_stats):
+    
+    def select_choice_child(self, action_node):
         """
-        Select the child with the highest UCB score.
+        Select the choice child
+        """
+        max_score = max(
+            self.quasi_random_score(choice_child)
+            for choice_child in action_node.children.items()
+        )
+        choice = numpy.random.choice(
+            [
+                choice
+                for choice, child_choice in action_node.children.items()
+                if self.quasi_random_score(child_choice) == max_score
+            ]
+        )
+        return choice, action_node.children[choice]
+    
+    def quasi_random_score(self, child_choice):
+        return child_choice.choice_prob / (child_choice.visit_count + 1)
+
+    def select_action_child(self, choice_node, min_max_stats):
+        """
+        Select the action child with the highest UCB score.
         """
         max_ucb = max(
-            self.ucb_score(node, child, min_max_stats)
-            for action, child in node.children.items()
+            self.ucb_score(choice_node, action_child, min_max_stats)
+            for action_child in choice_node.children.items()
         )
         assert len([
                 action
-                for action, child in node.children.items()
-                if self.ucb_score(node, child, min_max_stats) == max_ucb
-                ]) > 0, f"node.children.items(): {[action for action, _ in node.children.items()]}\n{[child for _, child in node.children.items()]}"
+                for action, action_child in choice_node.children.items()
+                if self.ucb_score(choice_node, action_child, min_max_stats) == max_ucb
+                ]) > 0, f"node.children.items(): {[action for action, _ in choice_node.children.items()]}\n{[child for _, child in choice_node.children.items()]}"
         action = numpy.random.choice(
             [
                 action
-                for action, child in node.children.items()
-                if self.ucb_score(node, child, min_max_stats) == max_ucb
+                for action, child in choice_node.children.items()
+                if self.ucb_score(choice_node, child, min_max_stats) == max_ucb
             ]
         )
-        return action, node.children[action]
+        return action, choice_node.children[action]
 
-    def ucb_score(self, parent, child, min_max_stats):
+    def ucb_score(self, parent_choice, child_action, min_max_stats):
         """
         The score for a node is based on its value, plus an exploration bonus based on the prior.
         """
         pb_c = (
             math.log(
-                (parent.visit_count + self.config.pb_c_base + 1) / self.config.pb_c_base
+                (parent_choice.visit_count + self.config.pb_c_base + 1) / self.config.pb_c_base
             )
             + self.config.pb_c_init
         )
-        pb_c *= math.sqrt(parent.visit_count) / (child.visit_count + 1)
+        pb_c *= math.sqrt(parent_choice.visit_count) / (child_action.visit_count + 1)
 
-        prior_score = pb_c * child.prior
+        prior_score = pb_c * child_action.prior
 
-        if child.visit_count > 0:
+        if child_action.visit_count > 0:
             # Mean value Q
             value_score = min_max_stats.normalize(
-                child.reward
+                child_action.reward() 
                 + self.config.discount
-                * (child.value() if len(self.config.players) == 1 else -child.value())
+                # * (child_action.value() if len(self.config.players) == 1 else -child_action.value())
+                * child_action.value()
             )
         else:
             value_score = 0
@@ -470,42 +516,49 @@ class MCTS:
 
         return prior_score + value_score
 
-    def backpropagate(self, search_path, value, to_play, min_max_stats):
+    def backpropagate(self, search_path_actioned_node, search_path_choiced_node, value, to_play, min_max_stats):
         """
         At the end of a simulation, we propagate the evaluation all the way up the tree
         to the root.
         """
         if len(self.config.players) == 1:
-            for node in reversed(search_path):
-                node.value_sum += value
-                node.visit_count += 1
-                min_max_stats.update(node.reward + self.config.discount * node.value())
+            for actioned_node in reversed(search_path_actioned_node):
+                actioned_node.value_sum += value
+                actioned_node.visit_count += 1
+                min_max_stats.update(actioned_node.reward() + self.config.discount * actioned_node.value())
 
-                value = node.reward + self.config.discount * value
+                value = actioned_node.reward() + self.config.discount * value
+
+            for choiced_node in reversed(search_path_choiced_node):
+                choiced_node.visit_count += 1
 
         elif len(self.config.players) == 2:
-            for node in reversed(search_path):
-                node.value_sum += value if node.to_play == to_play else -value
-                node.visit_count += 1
-                min_max_stats.update(node.reward + self.config.discount * -node.value())
+            for actioned_node in reversed(search_path_actioned_node):
+                actioned_node.value_sum += value if actioned_node.to_played == to_play else -value
+                actioned_node.visit_count += 1
+                min_max_stats.update(actioned_node.reward() + self.config.discount * -actioned_node.value())
 
+                # node内のrewardは親ノードのアクションによって出力される。node内のto_playではない方の報酬である
+                # 確率的MuZeroの場合は違う。rewardとto_playedは一致している。
+                # このプログラムはゼロサムゲームのシミュレーションであるからそもそもrewardは必要ないのだが。
                 value = (
-                    -node.reward if node.to_play == to_play else node.reward
+                    actioned_node.reward() if actioned_node.to_played == to_play else -actioned_node.reward()
                 ) + self.config.discount * value
+                
+            for choiced_node in reversed(search_path_choiced_node):
+                choiced_node.visit_count += 1
 
         else:
             raise NotImplementedError("More than two player mode not implemented.")
 
 
 class Node:
-    def __init__(self, prior):
+    def __init__(self, prior, to_played):
+        self.to_played = to_played
         self.visit_count = 0
-        self.to_play = -1
         self.prior = prior
         self.value_sum = 0
         self.children = {}
-        self.hidden_state = None
-        self.reward = 0
 
     def expanded(self):
         return len(self.children) > 0
@@ -515,11 +568,43 @@ class Node:
             return 0
         return self.value_sum / self.visit_count
 
-    def expand(self, actions, to_play, reward, policy_logits, hidden_state):
+    def reward(self):
+        reward_sum = 0
+        expanded_choice_node_count = 0
+        for choice_node in self.children:
+            if choice_node.expanded():
+                expanded_choice_node_count += 1
+                reward_sum += choice_node.reward
+        if expanded_choice_node_count == 0:
+            return 0
+        else:
+            return reward_sum / expanded_choice_node_count
+
+    def expand(self, num_choices, choices_logits):
         """
         We expand a node using the value, reward and policy prediction obtained from the
         neural network.
         """
+        choice_values = torch.softmax(
+            torch.tensor([choices_logits[0][a] for a in num_choices]), dim=0
+        )
+        choices = {c: choice_values[i] for i, c in enumerate(num_choices)} # ADDED ---------------------
+        for choice, c_prob in choices.items():
+            self.children[choice] = ChoiceNode(c_prob)
+
+class ChoiceNode:
+    def __init__(self, choice_prob):
+        self.visit_count = 0
+        self.choice_prob = choice_prob
+        self.hidden_state = None
+        self.children = {}
+        self.reward = 0
+        self.to_play = -1
+    
+    def expanded(self):
+        return self.children[0].expanded()
+    
+    def expand(self, to_play, reward, actions, policy_logits, hidden_state, num_choices, choices_logits):
         self.to_play = to_play
         self.reward = reward
         self.hidden_state = hidden_state
@@ -529,8 +614,9 @@ class Node:
         ).tolist()
         policy = {a: policy_values[i] for i, a in enumerate(actions)}
         for action, p in policy.items():
-            self.children[action] = Node(p)
-
+            self.children[action] = Node(p, to_play)
+            self.children[action].expand(num_choices, choices_logits)
+    
     def add_exploration_noise(self, dirichlet_alpha, exploration_fraction):
         """
         At the start of each search, we add dirichlet noise to the prior of the root to
@@ -541,7 +627,6 @@ class Node:
         frac = exploration_fraction
         for a, n in zip(actions, noise):
             self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
-
 
 class GameHistory:
     """

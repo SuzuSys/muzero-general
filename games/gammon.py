@@ -66,6 +66,9 @@ class MuZeroConfig:
         self.reduced_channels_choice = 4
         self.resnet_fc_choice_layers = [32]
         # ------------------------------------------------------------------------------------------------------
+        self.reduced_channels_player = 2
+        self.resnet_fc_player_layers = [4]
+        # ------------------------------------------------------------------------------------------------------
         
         # Fully Connected Network 
         # irrelevant!!!!!!!!!!!!

@@ -83,6 +83,8 @@ class Trainer:
                 value_loss,
                 reward_loss,
                 policy_loss,
+                choice_loss,
+                to_play_loss
             ) = self.update_weights(batch)
 
             # CHANGED ------------------------------------------------------------
@@ -116,6 +118,8 @@ class Trainer:
                     "value_loss": value_loss,
                     "reward_loss": reward_loss,
                     "policy_loss": policy_loss,
+                    "choice_loss": choice_loss,
+                    "to_play_loss": to_play_loss
                 }
             )
 
@@ -147,9 +151,12 @@ class Trainer:
             target_value,
             target_reward,
             target_policy,
+            target_to_play,
             weight_batch,
             gradient_scale_batch,
         ) = batch
+
+        # KOKOKARA
 
         # Keep values as scalars for calculating the priorities for the prioritized replay
         # [PAPER INFO] FOR BOARD GAMES, STATE ARE SAMPLED UNIFORMLY.
@@ -162,69 +169,96 @@ class Trainer:
         if self.config.PER:
             weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
         observation_batch = (
-            torch.tensor(numpy.array(observation_batch)).float().to(device)
+            torch.tensor(numpy.array(observation_batch).transpose(1, 0)).float().to(device)
         )
         action_batch = torch.tensor(action_batch).long().to(device).unsqueeze(-1)
         target_value = torch.tensor(target_value).float().to(device)
         target_reward = torch.tensor(target_reward).float().to(device)
         target_policy = torch.tensor(target_policy).float().to(device)
+        target_to_play = torch.tensor(target_to_play).float().to(device)
         gradient_scale_batch = torch.tensor(gradient_scale_batch).float().to(device)
-        # observation_batch: batch, channels, height, width
+        # observation_batch: num_unroll_steps+1, batch, channels, height, width
         # action_batch: batch, num_unroll_steps+1, 1 (unsqueeze)
         # target_value: batch, num_unroll_steps+1
         # target_reward: batch, num_unroll_steps+1
         # target_policy: batch, num_unroll_steps+1, len(action_space)
+        # target_to_play: batch, num_unroll_steps+1
         # gradient_scale_batch: batch, num_unroll_steps+1
-        
-        # FIXED -----------------------------------------------------------------------------------
-        # target_value = models.scalar_to_support(target_value, self.config.support_size)
-        # target_reward = models.scalar_to_support(
-        #     target_reward, self.config.support_size
-        # )
-        # -----------------------------------------------------------------------------------------
-        # (FALSE) target_value: batch, num_unroll_steps+1, 2*support_size+1
-        # (FALSE) target_reward: batch, num_unroll_steps+1, 2*support_size+1
-        # target_value: batch, num_unroll_steps+1
-        # target_reward: batch, num_unroll_steps+1
-        # target_policy: batch, num_unroll_steps+1, len(action_space)
 
         ## representation -> prediction
-        value, reward, policy_logits, hidden_state = self.model.initial_inference(
-            observation_batch
+        value, reward, policy_logits, hidden_state, choice_logits = self.model.initial_inference(
+            observation_batch[0]
         )
 
-        # (FALSE) value: batch, 2*support_size+1
-        # (FALSE) reward: batch, 2*support_size+1
         # value: batch, 1
         # reward: batch, 1
         # policy_logits: batch, len(action_space)
         # hidden_state: batch, channels(in the ResNet), height, width
+
+        to_play = target_to_play[:, 0] # to_play: batch, 1
         
-        predictions = [(value, reward, policy_logits)]
+        predictions = [(value, reward, policy_logits, choice_logits, to_play)]
+        target_choice = torch.zeros(self.config.batch_size, action_batch.shape[1], self.config.num_choice)
         for i in range(1, action_batch.shape[1]): # num_unroll_steps
-            ## dynamics -> prediction
-            value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
-                hidden_state, action_batch[:, i] # action_batch[:,i].shape: (batch, 1)
-            )
+            target_hidden_state = self.model.representation(observation_batch[i])
+            (
+                adopted_hidden_state, # batch, channels(in the ResNet), height, width
+                adopted_reward, # batch, 1
+                adopted_to_play, # batch, 1
+            ) = self.model.dynamics(hidden_state, action_batch[:, i], 0)
+            adopted_loss = ((target_hidden_state - adopted_hidden_state)**2).mean(dim=(1,2,3)) # batch
+            for choice in range(1, self.config.num_choice):
+                (
+                    temp_hidden_state, # batch, channels(in the ResNet), height, width
+                    temp_reward, # batch, 1
+                    temp_to_play # batch, 1
+                ) = self.model.dynamics(hidden_state, action_batch[:, i], choice)
+                temp_loss = ((target_hidden_state - temp_hidden_state)**2).mean(dim=(1,2,3)) # batch
+                
+                for batch in range(self.config.batch_size):
+                    if temp_loss[batch] < adopted_loss[batch]:
+                        adopted_loss[batch] = temp_loss[batch]
+                        adopted_hidden_state[batch] = temp_hidden_state[batch]
+                        adopted_reward[batch] = temp_reward[batch]
+                        adopted_to_play[batch] = temp_to_play[batch]
+                        target_choice[batch, i, choice] = 1
+            hidden_state = adopted_hidden_state
+            reward = adopted_reward
+            to_play = adopted_to_play
+            value, policy_logits, choice_logits = self.model.prediction(hidden_state)
+
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
-            predictions.append((value, reward, policy_logits))
-        # (????)predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | 9 (according to the 2nd dim)
+            predictions.append((value, reward, policy_logits, choice_logits, to_play))
 
         ## Compute losses
-        value_loss, reward_loss, policy_loss = (0, 0, 0)
-        value, reward, policy_logits = predictions[0]
+        value_loss, reward_loss, policy_loss, choice_loss, to_play_loss = (0, 0, 0, 0, 0)
+        value, reward, policy_logits, choice_logits, to_play = predictions[0]
         # Ignore reward loss for the first batch step
-        current_value_loss, _, current_policy_loss = self.loss_function(
-            value.squeeze(-1),
-            reward.squeeze(-1),
-            policy_logits,
-            target_value[:, 0],
-            target_reward[:, 0],
-            target_policy[:, 0],
+        (
+            current_value_loss,
+            current_reward_loss,
+            current_policy_loss,
+            current_choice_loss,
+            current_to_play_loss
+        ) = self.loss_function(
+            value.squeeze(-1), # batch
+            reward.squeeze(-1), # batch
+            policy_logits,  # batch, action_space
+            choice_logits, # batch, choice_num
+            to_play, # batch
+            target_value[:, 0], # batch
+            target_reward[:, 0], # batch
+            target_policy[:, 0], # batch, action_space
+            target_choice[:, 0], # batch, num_choice
+            target_to_play[:, 0] # batch
         )
         value_loss += current_value_loss
+        reward_loss += current_reward_loss
         policy_loss += current_policy_loss
+        choice_loss += current_choice_loss
+        to_play_loss += current_to_play_loss
+
         # Compute priorities for the prioritized replay (See paper appendix Training)
         # [PAPER INFO] FOR BOARD GAMES, STATE ARE SAMPLED UNIFORMLY.
         # FIXED ----------------------------------------------------------------------------
@@ -242,18 +276,24 @@ class Trainer:
         # -----------------------------------------------------------------------------------
 
         for i in range(1, len(predictions)):
-            value, reward, policy_logits = predictions[i]
+            value, reward, policy_logits, choice_logits, to_play = predictions[i]
             (
                 current_value_loss,
                 current_reward_loss,
                 current_policy_loss,
+                current_choice_loss,
+                current_to_play_loss
             ) = self.loss_function(
-                value.squeeze(-1),
-                reward.squeeze(-1),
-                policy_logits,
-                target_value[:, i],
-                target_reward[:, i],
-                target_policy[:, i],
+                value.squeeze(-1), # batch
+                reward.squeeze(-1), # batch
+                policy_logits,  # batch, action_space
+                choice_logits, # batch, choice_num
+                to_play, # batch
+                target_value[:, i], # batch
+                target_reward[:, i], # batch
+                target_policy[:, i], # batch, action_space
+                target_choice[:, i], # batch, num_choice
+                target_to_play[:, i] # batch
             )
 
             # Scale gradient by the number of unroll steps (See paper appendix Training)
@@ -268,10 +308,18 @@ class Trainer:
             current_policy_loss.register_hook(
                 lambda grad: grad / gradient_scale_batch[:, i]
             )
+            current_choice_loss.register_hook(
+                lambda grad: grad / gradient_scale_batch[:, i]
+            )
+            current_to_play_loss.register_hook(
+                lambda grad: grad / gradient_scale_batch[:, i]
+            )
 
             value_loss += current_value_loss
             reward_loss += current_reward_loss # 0
             policy_loss += current_policy_loss
+            choice_loss += current_choice_loss
+            to_play_loss += current_to_play_loss
 
             # Compute priorities for the prioritized replay (See paper appendix Training)
             # [PAPER INFO] FOR BOARD GAMES, STATE ARE SAMPLED UNIFORMLY.
@@ -290,7 +338,7 @@ class Trainer:
             # -------------------------------------------------------------------------------------------
 
         # Scale the value loss, paper recommends by 0.25 (See paper appendix Reanalyze)
-        loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss
+        loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss + choice_loss + to_play_loss
         if self.config.PER:
             # Correct PER bias by using importance-sampling (IS) weights
             loss *= weight_batch
@@ -310,6 +358,8 @@ class Trainer:
             value_loss.mean().item(),
             reward_loss.mean().item(),
             policy_loss.mean().item(),
+            choice_loss.mean().item(),
+            to_play_loss.mean().item()
         )
 
     def update_lr(self):
@@ -324,15 +374,21 @@ class Trainer:
 
     @staticmethod
     def loss_function(
-        value,
-        reward,
-        policy_logits,
-        target_value,
-        target_reward,
-        target_policy,
+        value, # batch
+        reward, # batch
+        policy_logits, # batch, action_space
+        choice_logits, # batch, num_choice
+        to_play, # batch
+        target_value, # batch
+        target_reward, # batch
+        target_policy, # batch, action_space
+        target_choice, # batch, num_choice
+        target_to_play # batch
     ):
         # Cross-entropy seems to have a better convergence than MSE
         value_loss = (value - target_value)**2
         reward_loss = reward # all zero
         policy_loss = (-target_policy * torch.nn.LogSoftmax(dim=1)(policy_logits)).sum(1)
-        return value_loss, reward_loss, policy_loss
+        choice_loss = (-target_choice * torch.nn.LogSoftmax(dim=1)(choice_logits)).sum(1)
+        to_play_loss = (to_play - target_to_play)**2
+        return value_loss, reward_loss, policy_loss, choice_loss, to_play_loss

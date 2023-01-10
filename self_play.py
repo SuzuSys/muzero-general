@@ -388,8 +388,8 @@ class MCTS:
                 current_tree_depth += 1
                 action, action_node = self.select_action_child(choice_node, min_max_stats)
                 search_path_actioned_node.append(action_node)
-                choice, choiced_node = self.select_choice_child(action_node)
-                search_path_choiced_node.append(choiced_node)
+                choice, choice_node = self.select_choice_child(action_node)
+                search_path_choiced_node.append(choice_node)
 
                 # Players play turn by turn
                 #if virtual_to_play + 1 < len(self.config.players):

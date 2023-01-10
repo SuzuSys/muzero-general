@@ -586,9 +586,9 @@ class Node:
         neural network.
         """
         choice_values = torch.softmax(
-            torch.tensor([choices_logits[0][a] for a in num_choices]), dim=0
+            torch.tensor([choices_logits[0][a] for a in range(num_choices)]), dim=0
         )
-        choices = {c: choice_values[i] for i, c in enumerate(num_choices)} # ADDED ---------------------
+        choices = {c: choice_values[i] for i, c in enumerate(range(num_choices))} # ADDED ---------------------
         for choice, c_prob in choices.items():
             self.children[choice] = ChoiceNode(c_prob)
 

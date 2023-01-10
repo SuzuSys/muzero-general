@@ -452,7 +452,7 @@ class MCTS:
         """
         max_score = max(
             self.quasi_random_score(choice_child)
-            for choice_child in action_node.children.items()
+            for choice_child in action_node.children.values()
         )
         choice = numpy.random.choice(
             [
@@ -472,7 +472,7 @@ class MCTS:
         """
         max_ucb = max(
             self.ucb_score(choice_node, action_child, min_max_stats)
-            for action_child in choice_node.children.items()
+            for action_child in choice_node.children.values()
         )
         assert len([
                 action
@@ -559,7 +559,7 @@ class Node:
         self.prior = prior
         self.value_sum = 0
         self.children = {}
-        
+
     def value(self):
         if self.visit_count == 0:
             return 0

@@ -559,10 +559,7 @@ class Node:
         self.prior = prior
         self.value_sum = 0
         self.children = {}
-
-    def expanded(self):
-        return len(self.children) > 0
-
+        
     def value(self):
         if self.visit_count == 0:
             return 0
@@ -602,7 +599,7 @@ class ChoiceNode:
         self.to_play = -1
     
     def expanded(self):
-        return self.children[0].expanded()
+        return len(self.children) > 0
     
     def expand(self, to_play, reward, actions, policy_logits, hidden_state, num_choices, choices_logits):
         self.to_play = to_play

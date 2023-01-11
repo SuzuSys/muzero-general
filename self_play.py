@@ -200,12 +200,14 @@ class SelfPlay:
                     )
 
                     if render:
+                        root_value = sum(child.value_sum for child in root.children.values()
+                            ) / sum(child.visit_count for child in root.children.values())
                         print(f'game_history count: {len(game_history.action_history)}')
                         print(f'legal_actions: {legal_actions}')
                         print(f'action: {action}')
                         print(f'Tree depth: {mcts_info["max_tree_depth"]}')
                         print(
-                            f"Root value for player {self.game.to_play()}: {root.value():.2f}"
+                            f"Root value for player {self.game.to_play()}: {root_value:.2f}"
                         )
                 else:
                     action, root = self.select_opponent_action(
@@ -568,7 +570,7 @@ class Node:
     def reward(self):
         reward_sum = 0
         expanded_choice_node_count = 0
-        for choice_node in self.children:
+        for choice_node in self.children.values():
             if choice_node.expanded():
                 expanded_choice_node_count += 1
                 reward_sum += choice_node.reward
@@ -655,7 +657,9 @@ class GameHistory:
                 ]
             )
 
-            self.root_values.append(root.value())
+            self.root_values.append(
+                sum(child.value_sum for child in root.children.values()) / sum_visits
+            )
         else:
             self.root_values.append(None)
 

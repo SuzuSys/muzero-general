@@ -170,7 +170,7 @@ class Trainer:
         if self.config.PER:
             weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
 
-        observation_batch = torch.tensor(observation_batch_numpy).float().to(device)
+        observation_unroll_batch = torch.tensor(observation_batch_numpy).float().to(device)
         action_batch = torch.tensor(action_batch).long().to(device).unsqueeze(-1)
         target_value = torch.tensor(target_value).float().to(device)
         target_reward = torch.tensor(target_reward).float().to(device)
@@ -187,7 +187,7 @@ class Trainer:
 
         ## representation -> prediction
         value, reward, policy_logits, hidden_state, choice_logits = self.model.initial_inference(
-            observation_batch[0]
+            observation_unroll_batch[0]
         )
         # value: batch, 1
         # reward: batch, 1
@@ -203,40 +203,34 @@ class Trainer:
             self.config.num_choice
         ).to(device)
         for i in range(1, action_batch.shape[1]): # num_unroll_steps
-            target_hidden_state = self.model.representation(observation_batch[i])
-            (
-                adopted_hidden_state, # batch, channels(in the ResNet), height, width
-                adopted_reward, # batch, 1
-                adopted_to_play, # batch, 1
-            ) = self.model.dynamics(
-                hidden_state, 
-                action_batch[:, i], 
-                torch.full((self.config.batch_size, 1), 0).to(device)
-            )
-            adopted_loss = ((target_hidden_state - adopted_hidden_state)**2).mean(dim=(1,2)) # batch
-            for choice in range(1, self.config.num_choice):
-                (
-                    temp_hidden_state, # batch, channels(in the ResNet), height, width
-                    temp_reward, # batch, 1
-                    temp_to_play # batch, 1
-                ) = self.model.dynamics(
+            target_hidden_state = self.model.representation(observation_unroll_batch[i]) 
+            # target_hidden_state: batch, channels(in the ResNet), height, width
+            candidate_error = []
+            for choice in range(self.config.num_choice):
+                temp_hidden_state, _, _ = self.model.dynamics(
                     hidden_state, 
                     action_batch[:, i], 
                     torch.full((self.config.batch_size, 1), choice).to(device)
                 )
-                temp_loss = ((target_hidden_state - temp_hidden_state)**2).mean(dim=(1,2)) # batch
-                
-                for batch in range(self.config.batch_size):
-                    if temp_loss[batch] < adopted_loss[batch]:
-                        adopted_loss[batch] = temp_loss[batch]
-                        adopted_hidden_state[batch] = temp_hidden_state[batch]
-                        adopted_reward[batch] = temp_reward[batch]
-                        adopted_to_play[batch] = temp_to_play[batch]
-                        target_choice[batch, i, choice] = 1
-            hidden_state = adopted_hidden_state
-            reward = adopted_reward
-            to_play = adopted_to_play
-            policy_logits, value, choice_logits = self.model.prediction(hidden_state)
+                # temp_hidden_state: batch, channels(in the ResNet), heigth, width
+                candidate_error.append(((target_hidden_state - temp_hidden_state)**2).mean(dim=(1,2)))
+                # candidate_error: choice, batch
+            candidate_error_tensor = torch.stack(candidate_error, dim=1).to(device)
+            # candidate_error_tensor: batch, choice
+            adopted_choice = torch.argmin(candidate_error_tensor, dim=1, keepdim=True).to(device)
+            # adopted_choice: batch, 1
+            (
+                value, 
+                reward, 
+                policy_logits, 
+                hidden_state, 
+                choice_logits, 
+                to_play
+            ) = self.model.recurrent_inference(
+                hidden_state,
+                action_batch[:, i],
+                adopted_choice
+            )
 
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
@@ -257,7 +251,7 @@ class Trainer:
             reward.squeeze(-1), # batch
             policy_logits,  # batch, action_space
             choice_logits, # batch, choice_num
-            to_play, # batch
+            to_play.squeeze(-1), # batch
             target_value[:, 0], # batch
             target_reward[:, 0], # batch
             target_policy[:, 0], # batch, action_space

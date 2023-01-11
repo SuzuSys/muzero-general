@@ -134,10 +134,13 @@ class ReplayBuffer:
         # to_play_batch: batch, num_unroll_steps+1
         # weight_batch: batch
         # gradient_scale_batch: batch, num_unroll_steps+1
+
+        observation_batch_numpy = numpy.stack(observation_batch, axis=1)
+
         return (
             index_batch,
             (
-                observation_batch,
+                observation_batch_numpy,
                 action_batch,
                 value_batch,
                 reward_batch,
@@ -296,12 +299,12 @@ class ReplayBuffer:
         Generate targets for every unroll steps.
         """
         target_values, target_rewards, target_policies, actions, to_play, observation = [], [], [], [], [], []
+        last_observation = None
+        clincher = None
         for current_index in range(
             state_index, state_index + self.config.num_unroll_steps + 1
         ):
             value = self.compute_target_value(game_history, current_index)
-            clincher = None
-            last_observation = None
 
             if current_index < len(game_history.root_values):
                 target_values.append(value)
@@ -350,7 +353,9 @@ class ReplayBuffer:
                 to_play.append(clincher)
                 observation.append(last_observation)
 
-        return target_values, target_rewards, target_policies, actions, to_play, observation
+        observation_numpy = numpy.stack(observation, axis=0)
+
+        return target_values, target_rewards, target_policies, actions, to_play, observation_numpy
 
 
 @ray.remote

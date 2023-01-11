@@ -577,7 +577,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
             DynamicsNetwork(
                 num_blocks,
                 num_channels, # FIXED ------------------------------------------------------
-                2 + self.num_choice,
+                2 + self.num_choice, # FIXED -----------------------------------------------
                 reduced_channels_reward,
                 fc_reward_layers,
                 None,

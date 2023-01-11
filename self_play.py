@@ -699,7 +699,6 @@ class GameHistory:
             stacked_observations = numpy.concatenate(
                 (stacked_observations, previous_observation)
             )
-
         return stacked_observations
 
 

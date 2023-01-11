@@ -186,7 +186,6 @@ class Trainer:
         value, reward, policy_logits, hidden_state, choice_logits = self.model.initial_inference(
             observation_batch[0]
         )
-
         # value: batch, 1
         # reward: batch, 1
         # policy_logits: batch, len(action_space)
@@ -195,7 +194,11 @@ class Trainer:
         to_play = target_to_play[:, 0] # to_play: batch, 1
         
         predictions = [(value, reward, policy_logits, choice_logits, to_play)]
-        target_choice = torch.zeros(self.config.batch_size, action_batch.shape[1], self.config.num_choice)
+        target_choice = torch.zeros(
+            self.config.batch_size, 
+            action_batch.shape[1], 
+            self.config.num_choice
+        ).to(device)
         for i in range(1, action_batch.shape[1]): # num_unroll_steps
             target_hidden_state = self.model.representation(observation_batch[i])
             (
@@ -230,7 +233,7 @@ class Trainer:
             hidden_state = adopted_hidden_state
             reward = adopted_reward
             to_play = adopted_to_play
-            value, policy_logits, choice_logits = self.model.prediction(hidden_state)
+            policy_logits, value, choice_logits = self.model.prediction(hidden_state)
 
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
@@ -293,7 +296,7 @@ class Trainer:
                 reward.squeeze(-1), # batch
                 policy_logits,  # batch, action_space
                 choice_logits, # batch, choice_num
-                to_play, # batch
+                to_play.squeeze(-1), # batch
                 target_value[:, i], # batch
                 target_reward[:, i], # batch
                 target_policy[:, i], # batch, action_space

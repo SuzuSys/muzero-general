@@ -202,15 +202,23 @@ class Trainer:
                 adopted_hidden_state, # batch, channels(in the ResNet), height, width
                 adopted_reward, # batch, 1
                 adopted_to_play, # batch, 1
-            ) = self.model.dynamics(hidden_state, action_batch[:, i], 0)
-            adopted_loss = ((target_hidden_state - adopted_hidden_state)**2).mean(dim=(1,2,3)) # batch
+            ) = self.model.dynamics(
+                hidden_state, 
+                action_batch[:, i], 
+                torch.full((self.config.batch_size, 1), 0).to(device)
+            )
+            adopted_loss = ((target_hidden_state - adopted_hidden_state)**2).mean(dim=(1,2)) # batch
             for choice in range(1, self.config.num_choice):
                 (
                     temp_hidden_state, # batch, channels(in the ResNet), height, width
                     temp_reward, # batch, 1
                     temp_to_play # batch, 1
-                ) = self.model.dynamics(hidden_state, action_batch[:, i], choice)
-                temp_loss = ((target_hidden_state - temp_hidden_state)**2).mean(dim=(1,2,3)) # batch
+                ) = self.model.dynamics(
+                    hidden_state, 
+                    action_batch[:, i], 
+                    torch.full((self.config.batch_size, 1), choice).to(device)
+                )
+                temp_loss = ((target_hidden_state - temp_hidden_state)**2).mean(dim=(1,2)) # batch
                 
                 for batch in range(self.config.batch_size):
                     if temp_loss[batch] < adopted_loss[batch]:

@@ -20,6 +20,8 @@ import self_play
 import shared_storage
 import trainer
 
+from operation.api import get_command
+
 
 class MuZero:
     """
@@ -351,7 +353,10 @@ class MuZero:
                     end="\r",
                 )
                 counter += 1
-                time.sleep(0.5)
+                if get_command('stop'):
+                    print("Control: STOP")
+                    break
+                time.sleep(1)
         except KeyboardInterrupt:
             print("KeyboardInterrupt!!!!")
             print("terminate process...")
@@ -674,8 +679,10 @@ if __name__ == "__main__":
         config = json.loads(sys.argv[2])
         muzero = MuZero(sys.argv[1], config)
         muzero.train()
+    elif get_command('stop'):
+        print('The "stop" switch on controller is true.')
     else:
-        print("Version: 3.0.59")
+        print("Version: 3.2.0")
         print("\nWelcome to MuZero! Here's a list of games:")
         # Let user pick a game
         games = [

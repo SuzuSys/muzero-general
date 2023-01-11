@@ -95,5 +95,8 @@ dmypy.json
 # results
 results/*
 
+# operation/controller.json
+operation/controller.json
+
 # desktop
 desktop.ini

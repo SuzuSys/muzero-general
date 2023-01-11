@@ -675,7 +675,7 @@ if __name__ == "__main__":
         muzero = MuZero(sys.argv[1], config)
         muzero.train()
     else:
-        print("Version: 3.0.49")
+        print("Version: 3.0.58")
         print("\nWelcome to MuZero! Here's a list of games:")
         # Let user pick a game
         games = [

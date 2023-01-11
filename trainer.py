@@ -24,6 +24,8 @@ class Trainer:
         numpy.random.seed(self.config.seed)
         torch.manual_seed(self.config.seed)
 
+        torch.autograd.set_detect_anomaly(True)
+
         # Initialize the network
         self.model = models.MuZeroNetwork(self.config)
         self.model.set_weights(copy.deepcopy(initial_checkpoint["weights"]))
@@ -110,6 +112,7 @@ class Trainer:
                     discord_io.trainer_send("[{}/{}] Saved Checkpoint!".format(self.training_step, self.config.training_steps))
                     #---------------------------------------------------------------------
                     shared_storage.save_checkpoint.remote()
+            print("TRAINED!TRAINED!TRAINED!TRAINED!TRAINED!TRAINED!TRAINED!TRAINED!TRAINED!TRAINED!TRAINED!")
             shared_storage.set_info.remote(
                 {
                     "training_step": self.training_step,
@@ -191,7 +194,7 @@ class Trainer:
         # policy_logits: batch, len(action_space)
         # hidden_state: batch, channels(in the ResNet), height, width
 
-        to_play = target_to_play[:, 0] # to_play: batch, 1
+        to_play = torch.full((self.config.batch_size, 1), 0).to(device) # (ignore)
         
         predictions = [(value, reward, policy_logits, choice_logits, to_play)]
         target_choice = torch.zeros(
@@ -242,7 +245,7 @@ class Trainer:
         ## Compute losses
         value_loss, reward_loss, policy_loss, choice_loss, to_play_loss = (0, 0, 0, 0, 0)
         value, reward, policy_logits, choice_logits, to_play = predictions[0]
-        # Ignore reward loss for the first batch step
+        
         (
             current_value_loss,
             current_reward_loss,
@@ -261,11 +264,10 @@ class Trainer:
             target_choice[:, 0], # batch, num_choice
             target_to_play[:, 0] # batch
         )
+        # IGNORE REWARD, TO_PLAY LOSS FOR THE FIRST BATCH STEP
         value_loss += current_value_loss
-        reward_loss += current_reward_loss
         policy_loss += current_policy_loss
         choice_loss += current_choice_loss
-        to_play_loss += current_to_play_loss
 
         # Compute priorities for the prioritized replay (See paper appendix Training)
         # [PAPER INFO] FOR BOARD GAMES, STATE ARE SAMPLED UNIFORMLY.
@@ -367,7 +369,7 @@ class Trainer:
             reward_loss.mean().item(),
             policy_loss.mean().item(),
             choice_loss.mean().item(),
-            to_play_loss.mean().item()
+            to_play_loss.mean().item(),
         )
 
     def update_lr(self):

@@ -37,9 +37,7 @@ class MuZeroNetwork:
                 # ADDED ------------------------------------------------------------------------------
                 config.reduced_channels_choice,
                 config.resnet_fc_choice_layers,
-                config.num_choice,
-                config.reduced_channels_player,
-                config.resnet_fc_player_layers,
+                config.num_choice
                 # ------------------------------------------------------------------------------------
             )
         else:
@@ -383,10 +381,6 @@ class DynamicsNetwork(torch.nn.Module):
         reduced_channels_reward,
         fc_reward_layers,
         block_output_size_reward,
-        reduced_channels_player,
-        fc_player_layers,
-        block_output_size_player,
-
     ):
         super().__init__()
         # FIXED ------------------------------------------------------------------------------------
@@ -397,15 +391,6 @@ class DynamicsNetwork(torch.nn.Module):
         )
         # reward process was deleted!!!
         # ------------------------------------------------------------------------------------------
-        
-        self.conv1_player = torch.nn.Conv1d(num_channels, reduced_channels_player, kernel_size=1)
-        self.block_output_size_player = block_output_size_player
-        self.fc_player = mlp(
-            self.block_output_size_player,
-            fc_player_layers,
-            1,
-            torch.nn.Sigmoid
-        )
 
     def forward(self, x):
         x = self.conv(x)
@@ -417,12 +402,7 @@ class DynamicsNetwork(torch.nn.Module):
         # FIXED ------------------------------------------------------------------------------------
         reward = torch.zeros(len(x), 1).to(x.device)
         # ------------------------------------------------------------------------------------------
-        # ADDED ------------------------------------------------------------------------------------
-        player = self.conv1_player(x)
-        player = player.view(-1, self.block_output_size_player)
-        player = self.fc_player(player) # tensor to scalar*batch [0, 1] (tensor type)
-        # ------------------------------------------------------------------------------------------
-        return state, reward, player
+        return state, reward
 
 
 class PredictionNetwork(torch.nn.Module):
@@ -514,8 +494,6 @@ class MuZeroResidualNetwork(AbstractNetwork):
         reduced_channels_choice,
         fc_choice_layers,
         num_choice,
-        reduced_channels_player,
-        fc_player_layers,
         # --------------------------------------------------------------------------------
     ):
         super().__init__()
@@ -561,8 +539,6 @@ class MuZeroResidualNetwork(AbstractNetwork):
         block_output_size_choice = reduced_channels_choice * observation_shape[1]
         # -------------------------------------------------------------------------------------------------------
 
-        block_output_size_player = reduced_channels_player * observation_shape[1]
-
         self.representation_network = torch.nn.DataParallel(
             RepresentationNetwork(
                 observation_shape,
@@ -581,9 +557,6 @@ class MuZeroResidualNetwork(AbstractNetwork):
                 reduced_channels_reward,
                 fc_reward_layers,
                 None,
-                reduced_channels_player,
-                fc_player_layers,
-                block_output_size_player,
             )
         )
 
@@ -647,7 +620,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
         )
         x = torch.cat((encoded_state, action_one_hot, choice_one_hot), dim=1) # shape: (batch, channels+2+num_choice, 14)
         # -----------------------------------------------------------------------------------
-        next_encoded_state, reward, player = self.dynamics_network(x)
+        next_encoded_state, reward = self.dynamics_network(x)
 
         # Scale encoded state between [0, 1] (See paper appendix Training)
         # FIXED ----------------------------------------------------------------------------
@@ -659,7 +632,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
         next_encoded_state_normalized = (
             next_encoded_state - min_next_encoded_state
         ) / scale_next_encoded_state
-        return next_encoded_state_normalized, reward, player # tensor to scalar*batch [0, 1] (tensor type)
+        return next_encoded_state_normalized, reward
     # representation and prediction
     def initial_inference(self, observation):
         # observation shape: (batch, channels, 14)
@@ -678,15 +651,14 @@ class MuZeroResidualNetwork(AbstractNetwork):
         )
     # dynamics and prediction
     def recurrent_inference(self, encoded_state, action, choice):
-        next_encoded_state, reward, player = self.dynamics(encoded_state, action, choice)
+        next_encoded_state, reward = self.dynamics(encoded_state, action, choice)
         policy_logits, value, choice_logits = self.prediction(next_encoded_state)
         return (
             value, 
             reward, 
             policy_logits, 
             next_encoded_state, 
-            choice_logits, 
-            player
+            choice_logits
         )
 
 ########### End ResNet ###########

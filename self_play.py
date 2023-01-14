@@ -189,6 +189,7 @@ class SelfPlay:
                         stacked_observations,
                         legal_actions,
                         self.game.to_play(),
+                        self.game.move_number(),
                         True,
                     )
                     action = self.select_action(
@@ -249,6 +250,7 @@ class SelfPlay:
                 stacked_observations,
                 self.game.legal_actions(),
                 self.game.to_play(),
+                self.game.move_number(),
                 True,
             )
             print(f'Tree depth: {mcts_info["max_tree_depth"]}')
@@ -317,6 +319,7 @@ class MCTS:
         observation,
         legal_actions,
         to_play,
+        move_number,
         add_exploration_noise,
         override_root_with=None,
     ):
@@ -333,7 +336,7 @@ class MCTS:
             root = override_root_with
             root_predicted_value = None
         else:
-            root = ChoiceNode(0)
+            root = ChoicedNode(0)
             observation = (
                 torch.tensor(observation)
                 .float()
@@ -361,6 +364,7 @@ class MCTS:
             ), "Legal actions should be a subset of the action space."
             root.expand(
                 to_play,
+                move_number,
                 reward,
                 legal_actions,
                 policy_logits,
@@ -393,12 +397,6 @@ class MCTS:
                 choice, choice_node = self.select_choice_child(action_node)
                 search_path_choiced_node.append(choice_node)
 
-                # Players play turn by turn
-                #if virtual_to_play + 1 < len(self.config.players):
-                #    virtual_to_play = self.config.players[virtual_to_play + 1]
-                #else:
-                #    virtual_to_play = self.config.players[0]
-
             # Inside the search tree we use the dynamics function to obtain the next hidden
             # state given an action and the previous hidden state
             parent_choice = search_path_choiced_node[-2]
@@ -409,8 +407,7 @@ class MCTS:
                 reward, 
                 policy_logits, 
                 hidden_state, 
-                choice_logits, 
-                to_play_logits
+                choice_logits
             ) = model.recurrent_inference(
                 parent_choice.hidden_state,
                 torch.tensor([[action]]).to(parent_choice.hidden_state.device),
@@ -421,15 +418,16 @@ class MCTS:
             value = value[0,0].item() # scalar [0,1]
             reward = reward[0,0].item()
 
-            ## ADDED -----------------------------------------------------------------------------------
-            ## PLAYER CATEGORIZE
-            virtual_to_play = to_play_logits[0,0].item() # scalar [0, 1]
-            virtual_to_play = 1 if virtual_to_play > 0.5 else 0
-            ## ----------------------------------------------------------------------------------------
             # ----------------------------------------------------------------------------------------
+            virtual_move_number = parent_choice.move_number + 1
+            virtual_to_play = parent_choice.to_play
+            if virtual_move_number == 4:
+                virtual_move_number = 0
+                virtual_to_play = 0 if virtual_to_play == 1 else 1
 
             choice_node.expand(
                 virtual_to_play,
+                virtual_move_number,
                 reward,
                 self.config.action_space,
                 policy_logits,
@@ -554,9 +552,10 @@ class MCTS:
             raise NotImplementedError("More than two player mode not implemented.")
 
 
-class Node:
-    def __init__(self, prior, to_played):
+class ActionedNode:
+    def __init__(self, prior, to_played, moved_number):
         self.to_played = to_played
+        self.moved_number = moved_number
         self.visit_count = 0
         self.prior = prior
         self.value_sum = 0
@@ -589,9 +588,9 @@ class Node:
         )
         choices = {c: choice_values[i] for i, c in enumerate(range(num_choices))} # ADDED ---------------------
         for choice, c_prob in choices.items():
-            self.children[choice] = ChoiceNode(c_prob)
+            self.children[choice] = ChoicedNode(c_prob)
 
-class ChoiceNode:
+class ChoicedNode:
     def __init__(self, choice_prob):
         self.visit_count = 0
         self.choice_prob = choice_prob
@@ -599,12 +598,14 @@ class ChoiceNode:
         self.children = {}
         self.reward = 0
         self.to_play = -1
+        self.move_number = -1
     
     def expanded(self):
         return len(self.children) > 0
     
-    def expand(self, to_play, reward, actions, policy_logits, hidden_state, num_choices, choices_logits):
+    def expand(self, to_play, move_number, reward, actions, policy_logits, hidden_state, num_choices, choices_logits):
         self.to_play = to_play
+        self.move_number = move_number
         self.reward = reward
         self.hidden_state = hidden_state
 
@@ -613,7 +614,7 @@ class ChoiceNode:
         ).tolist()
         policy = {a: policy_values[i] for i, a in enumerate(actions)}
         for action, p in policy.items():
-            self.children[action] = Node(p, to_play)
+            self.children[action] = ActionedNode(p, to_play, move_number)
             self.children[action].expand(num_choices, choices_logits)
     
     def add_exploration_noise(self, dirichlet_alpha, exploration_fraction):

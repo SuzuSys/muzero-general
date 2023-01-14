@@ -4,7 +4,7 @@ import seaborn
 import torch
 
 import models
-from self_play import MCTS, Node, SelfPlay
+from self_play import MCTS, ActionedNode, SelfPlay
 
 
 class DiagnoseModel:
@@ -58,7 +58,7 @@ class DiagnoseModel:
             )
             value = models.support_to_scalar(value, self.config.support_size).item()
             reward = models.support_to_scalar(reward, self.config.support_size).item()
-            root = Node(0)
+            root = ActionedNode(0)
             root.expand(
                 self.config.action_space,
                 virtual_to_play,

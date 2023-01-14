@@ -66,9 +66,6 @@ class MuZeroConfig:
         self.reduced_channels_choice = 4
         self.resnet_fc_choice_layers = [32]
         # ------------------------------------------------------------------------------------------------------
-        self.reduced_channels_player = 2
-        self.resnet_fc_player_layers = [4]
-        # ------------------------------------------------------------------------------------------------------
         
         # Fully Connected Network 
         # irrelevant!!!!!!!!!!!!
@@ -157,6 +154,15 @@ class Game(AbstractGame):
             The current player, it should be an element of the players list in the config.
         """
         return self.env.turn
+
+    def move_number(self):
+        """
+        Return the current move_number.
+
+        Returns:
+            The current move_number.
+        """
+        return self.env.gammon.move_number
     
     def legal_actions(self):
         """

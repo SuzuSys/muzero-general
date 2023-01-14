@@ -193,15 +193,16 @@ class Trainer:
         # reward: batch, 1
         # policy_logits: batch, len(action_space)
         # hidden_state: batch, channels(in the ResNet), height, width
+        # choice_logits: batch, len(num_choice)
 
         to_play = torch.full((self.config.batch_size, 1), 0).to(device) # (ignore)
         
         predictions = [(value, reward, policy_logits, choice_logits, to_play)]
-        target_choice = torch.zeros(
+        target_choice_zero = torch.zeros(
             self.config.batch_size, 
-            action_batch.shape[1], 
             self.config.num_choice
-        ).to(device)
+        ).float().to(device)
+        target_choice_array = []
         for i in range(1, action_batch.shape[1]): # num_unroll_steps
             target_hidden_state = self.model.representation(observation_unroll_batch[i]) 
             # target_hidden_state: batch, channels(in the ResNet), height, width
@@ -219,6 +220,7 @@ class Trainer:
             # candidate_error_tensor: batch, choice
             adopted_choice = torch.argmin(candidate_error_tensor, dim=1, keepdim=True).to(device)
             # adopted_choice: batch, 1
+            target_choice_array.append(target_choice_zero.scatter(index=adopted_choice, value=1.0, dim=1))
             (
                 value, 
                 reward, 
@@ -235,6 +237,10 @@ class Trainer:
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
             predictions.append((value, reward, policy_logits, choice_logits, to_play))
+
+        target_choice_array.append(target_choice_zero) # ignore loss
+        target_choice = torch.stack(target_choice_array, dim=1).to(device)
+        # target_choice: batch, nun_unroll_steps+1, num_choice
 
         ## Compute losses
         value_loss, reward_loss, policy_loss, choice_loss, to_play_loss = (0, 0, 0, 0, 0)

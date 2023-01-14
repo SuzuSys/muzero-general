@@ -36,7 +36,8 @@ class Render:
                 if n//10 > 0:
                     d[HEIGHT_POINTS+1,j-1] = str(n//10)
                 n += 1
-        self.deploy_string(d[HEIGHT_POINTS+4,:5], "DICE:")
+        self.deploy_string(d[HEIGHT_POINTS+3,:5], "DICE:")
+        self.deploy_string(d[HEIGHT_POINTS+4,:14], "MOVED: [     ]")
         self.deploy_string(d[HEIGHT_POINTS+5,:7], "PLAYER:")
         self.D = d
 
@@ -92,17 +93,13 @@ class Render:
         for i,off in [(P[0], position.player_off), (P[5], position.opponent_off)]:
             self.D[HEIGHT_POINTS+2,i+2] = off%10
             self.D[HEIGHT_POINTS+2,i+1] = off//10 if off//10 > 0 else ' '
-        if dice.left == dice.right:
-            for i in range(4):
-                self.D[HEIGHT_POINTS+4,6+i*2] = dice.left
-                self.D[HEIGHT_POINTS+3,6+i*2] = '*' if used_dice.left > i else ' '
-        else:
-            self.D[HEIGHT_POINTS+4,6] = str(dice.left)
-            self.D[HEIGHT_POINTS+4,8] = str(dice.right)
-            self.D[HEIGHT_POINTS+3,6] = '*' if used_dice.left == 1 else ' '
-            self.D[HEIGHT_POINTS+3,8] = '*' if used_dice.right == 1 else ' '
-            for i in [10, 12]:
-                self.deploy_string(self.D[HEIGHT_POINTS+3:HEIGHT_POINTS+5,i], '  ')
+        self.D[HEIGHT_POINTS+3,6] = str(dice.left)
+        self.D[HEIGHT_POINTS+3,8] = str(dice.right)
+        for i in range(3):
+            p = ' '
+            if len(used_dice.used) > i:
+                p = str(used_dice.used[i]) if used_dice.used[i] != 0 else '*'
+            self.D[HEIGHT_POINTS+4,8+i*2] = p
         self.D[HEIGHT_POINTS+5,8] = str(int(player))
         return "".join(list(self.D.flatten()))
 

@@ -17,14 +17,10 @@ class Dice(NamedTuple):
 DiceType = Dice
 
 @dataclasses.dataclass
-class UsedDice:
-    left: int = 0
-    right: int = 0
-    def count(self, die: DieType) -> None:
-        if die == Die.LEFT:
-            self.left += 1
-        else:
-            self.right += 1
+class UsedDice: # use for render
+    used: List[int] = dataclasses.field(default_factory=list)
+    def count(self, pip: int) -> None:
+        self.used.append(pip)
 UsedDiceType = UsedDice
 
 @enum.unique

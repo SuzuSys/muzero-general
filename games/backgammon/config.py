@@ -19,16 +19,21 @@ ACTION_SPACE = 1 + (POINTS + 2) * 2
 # observation width/height/channels
 OBS_WIDTH = POINTS + 2 # [b/o][points][o/b]
 OBS_HEIGHT = CHECKERS # >= CHECKERS
-OBS_DEPTH = 9
-# 1: player_0's checkers (quantity)
-# 2: player_1's checkers (quantity)
-# 3: off/bar [1][0,..,0][1]
-# 4: player_0's home [0][0,..,0][1,..,1][0]
-# 5: player_1's home [0][1,..,1][0,..,0][0]
-# 6: left dice (numerical)
-# 7: right dice (numerical)
-# 8: chose dice (left dice: downer, right dice: upper)
-# 9: turn (player_0: 0, player_1: 1)
+OBS_DEPTH = 12
+# 0: player_0's checkers (quantity)                       w.h
+# 1: player_1's checkers (quantity)                       w.h
+# 2: off/bar [1][0,..,0][1]                               w
+# 3: player_0's home [0][0,..,0][1,..,1][0]               w
+# 4: player_1's home [0][1,..,1][0,..,0][0]               w
+# 5: source pips (left die)                               w
+# 6: destination pips (left die)                          w
+# 7: source pips (right die)                              w
+# 8: destination pips (right die)                         w
+# 9: number of usable dice (if 2: [1][1][0][0])           h
+# 10: number of dice to use (if third move: [0][0][1][0]) h
+# 11: turn (player_0: 0, player_1: 1)                     1
+
+# If double, observation 8, 9 is 0
 
 # render setting
 HEIGHT_POINTS = 3

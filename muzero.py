@@ -682,7 +682,7 @@ if __name__ == "__main__":
     elif get_command('stop'):
         print('The "stop" switch on controller is true.')
     else:
-        print("Version: 3.2.0")
+        print("Version: 3.2.26")
         print("\nWelcome to MuZero! Here's a list of games:")
         # Let user pick a game
         games = [

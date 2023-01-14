@@ -7,7 +7,7 @@ import numpy as np
 
 from .config import PIPS_COUNT, CHECKERS, HOME_POINTS, POINTS
 from .position import Position, PositionType
-from .structs import Die, Dice, UsedDice, MatchState, Move, Action, DieType, DiceType, UsedDiceType, MatchStateType, MoveType, ActionType
+from .structs import Die, Dice, UsedDice, MatchState, Move, Action, DieType, DiceType, UsedDiceType, MatchStateType, MoveType, ActionType, NumpyType
 
 class GammonOneway:
     def __init__(self, seed: int):
@@ -21,6 +21,8 @@ class GammonOneway:
         random.seed(seed)
         self.position: PositionType = Position()
         self.legal_plays: List[MoveType] = []
+        self.legal_plays_depth: int = 0
+        self.move_number: int = 0
         self.dice: DiceType = Dice(0,0)
         self.used_dice: UsedDiceType = UsedDice()
     
@@ -150,7 +152,7 @@ class GammonOneway:
             else (self.dice.left, self.dice.right)
         plays: List[MoveType]
         if doubles:
-            plays, _ = generate(self.position, dice, 0)
+            plays, self.legal_plays_depth = generate(self.position, dice, 0)
         else:
             left_plays: List[MoveType]
             left_depth: int
@@ -160,26 +162,32 @@ class GammonOneway:
             right_plays, right_depth = generate(self.position, dice[::-1], 0)
             if left_depth < right_depth:
                 plays = right_plays
+                self.legal_plays_depth = right_depth
             elif right_depth < left_depth:
                 plays = left_plays
+                self.legal_plays_depth = left_depth
             elif left_depth == 1:
+                self.legal_plays_depth = 1
                 if self.dice.left < self.dice.right:
                     plays = right_plays
                 else:
                     plays = left_plays
             else:
                 plays = left_plays + right_plays
+                self.legal_plays_depth = left_depth
         self.legal_plays = plays
-
-    def get_legal_actions(self) -> List[int]:
+    
+    def get_legal_points(self) -> NumpyType:
         """
-        Return an array of integers, subset of the action space.
-
+        legal_actions to numpy: [g|...|b]
+        
         Returns:
-            List[int]: an array of integers, subset of the action space 
+            NumpyType: [g|...|b]
+            0: Left dice,  source
+            1: Left dice,  destination
+            2: Right dice, source
+            3: Right dice, destination
         """
-        if len(self.legal_plays) == 0:
-            return [0]
 
         def pips_to_die(dice: DiceType, pips: int) -> DieType:
             if pips == dice.left:
@@ -187,20 +195,19 @@ class GammonOneway:
             elif pips == dice.right:
                 return Die.RIGHT
 
-        legal_moves: List[ActionType] = [
-            Action(pips_to_die(self.dice, move.pips), move.source)
-            for move in self.legal_plays]
-        
-        def source_to_action(die: DieType, source: Optional[int]) -> int:
-            if source == None:
-                return (POINTS + 1) * (die + 1)
+        points_array: NumpyType = np.zeros((4, POINTS + 2), dtype='int8')
+        for move in self.legal_plays:
+            die = pips_to_die(self.dice, move.pips)
+            if move.source == None:
+                points_array[die*2, POINTS+1] = 1
             else:
-                return (POINTS + 1) * die + source + 1
-        
-        legal_actions: List[int] = [source_to_action(action.die, action.source)
-            for action in legal_moves]
-
-        return legal_actions
+                points_array[die*2, move.source+1] = 1
+            if move.destination == None:
+                points_array[die*2+1, 0] = 1
+            else:
+                points_array[die*2+1, move.destination+1] = 1
+        return points_array
+            
     
     def action(self, action: int) -> MatchStateType:
         """
@@ -216,37 +223,42 @@ class GammonOneway:
         source: int
         action_temp: int = action
         if action_temp == 0:
-            return MatchState.TURN_OVER
-        elif action_temp <= POINTS + 1:
-            die = Die.LEFT
-            action_temp -= 1
+            self.used_dice.count(0)
         else:
-            die = Die.RIGHT
-            action_temp -= POINTS + 2
-        if action_temp == POINTS:
-            source = None
-        else:
-            source = action_temp
-        
-        pips: int = self.dice[die]
-        move: Optional[MoveType] = None
-        drive: List[Tuple[int, int]] = []
-        for m in self.legal_plays:
-            drive.append((m.pips, m.source))
-            if m.pips == pips and m.source == source:
-                move = m
-                break
-        assert move, f"ERROR! action: {action},\n action_temp: {action_temp},\n die: {die},\n source: {source},\n pips: {pips},\n move: {move},\n drive: {drive}"
-        self.position = self.position.apply_move(move.source, move.destination)
-        self.legal_plays = move.next_moves
-        self.used_dice.count(die)
+            if action_temp <= POINTS + 1:
+                die = Die.LEFT
+                action_temp -= 1
+            else:
+                die = Die.RIGHT
+                action_temp -= POINTS + 2
+            if action_temp == POINTS:
+                source = None
+            else:
+                source = action_temp
+            
+            pips: int = self.dice[die]
+            move: Optional[MoveType] = None
+            drive: List[Tuple[int, int]] = []
+            for m in self.legal_plays:
+                drive.append((m.pips, m.source))
+                if m.pips == pips and m.source == source:
+                    move = m
+                    break
+            self.position = self.position.apply_move(move.source, move.destination)
+            self.legal_plays = move.next_moves
+            self.used_dice.count(pips)
 
         match_state: MatchStateType = MatchState.NOTHING
         if len(self.legal_plays) == 0:
             if self.position.player_off == CHECKERS:
                 match_state = MatchState.GAME_OVER
-            else:
+            elif self.move_number == 3:
                 match_state = MatchState.TURN_OVER
+                self.move_number = 0
+            else:
+                self.move_number += 1
+        else:
+            self.move_number += 1
 
         return match_state
 

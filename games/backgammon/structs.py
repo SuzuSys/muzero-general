@@ -38,11 +38,6 @@ class Move:
     next_moves: List["Move"]
 MoveType = Move
 
-class Action(NamedTuple):
-    die: DieType
-    source: Optional[int]
-ActionType = Action
-
 @enum.unique
 class Player(enum.IntEnum):
     ZERO = 0b00

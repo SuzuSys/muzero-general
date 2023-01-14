@@ -7,7 +7,7 @@ import numpy as np
 
 from .config import PIPS_COUNT, CHECKERS, HOME_POINTS, POINTS
 from .position import Position, PositionType
-from .structs import Die, Dice, UsedDice, MatchState, Move, Action, DieType, DiceType, UsedDiceType, MatchStateType, MoveType, ActionType, NumpyType
+from .structs import Die, Dice, UsedDice, MatchState, Move, DieType, DiceType, UsedDiceType, MatchStateType, MoveType, NumpyType
 
 class GammonOneway:
     def __init__(self, seed: int):

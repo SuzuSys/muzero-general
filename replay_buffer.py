@@ -7,6 +7,8 @@ import torch
 
 import models
 
+import discord_io
+
 
 @ray.remote
 class ReplayBuffer:
@@ -29,6 +31,10 @@ class ReplayBuffer:
 
         # Fix random generator seed
         numpy.random.seed(self.config.seed)
+
+        # CHANGED -----------------------------------------------
+        discord_io.replay_buffer_send("Initialized!")
+        # -------------------------------------------------------
 
     def save_game(self, game_history, shared_storage=None):
         if self.config.PER:
@@ -84,22 +90,23 @@ class ReplayBuffer:
         ):
             game_pos, pos_prob = self.sample_position(game_history)
 
-            values, rewards, policies, actions = self.make_target(
+            values, rewards, policies, actions, observation = self.make_target(
                 game_history, game_pos
             )
 
             index_batch.append([game_id, game_pos])
-            observation_batch.append(
-                game_history.get_stacked_observations(
-                    game_pos,
-                    self.config.stacked_observations,
-                    len(self.config.action_space),
-                )
-            )
+            #observation_batch.append(
+            #    game_history.get_stacked_observations(
+            #        game_pos,
+            #        self.config.stacked_observations,
+            #        len(self.config.action_space),
+            #    )
+            #)
             action_batch.append(actions)
             value_batch.append(values)
             reward_batch.append(rewards)
             policy_batch.append(policies)
+            observation_batch.append(observation)
             gradient_scale_batch.append(
                 [
                     min(
@@ -117,17 +124,21 @@ class ReplayBuffer:
                 weight_batch
             )
 
-        # observation_batch: batch, channels, height, width
+        # observation_batch: batch, num_unroll_steps+1, channels, height, width
         # action_batch: batch, num_unroll_steps+1
         # value_batch: batch, num_unroll_steps+1
         # reward_batch: batch, num_unroll_steps+1
         # policy_batch: batch, num_unroll_steps+1, len(action_space)
+        # to_play_batch: batch, num_unroll_steps+1
         # weight_batch: batch
         # gradient_scale_batch: batch, num_unroll_steps+1
+
+        observation_batch_numpy = numpy.stack(observation_batch, axis=1)
+
         return (
             index_batch,
             (
-                observation_batch,
+                observation_batch_numpy,
                 action_batch,
                 value_batch,
                 reward_batch,
@@ -169,7 +180,22 @@ class ReplayBuffer:
             game_prob_dict = dict(
                 [(game_id, prob) for game_id, prob in zip(game_id_list, game_probs)]
             )
+            # CHANGED ---------------------------------------------------------------------
+            ## send number of NaN to discord
+            ## num_nan = sum(numpy.isnan(game_probs))
+            ## discord_io.send("[test log] Number of NaN in game_probs: {}".format(num_nan))
+            # nan to num
+            ## if num_nan > 0:
+            ##    game_probs_zero = numpy.nan_to_num(game_probs)
+            ##    num = (1 - sum(game_probs_zero)) / num_nan
+            ##    numpy.nan_to_num(game_probs, copy=False, nan=num)
+            ##    discord_io.send("[test log] sum of game_probs: {}".format(sum(game_probs)))
+            # -----------------------------------------------------------------------------
+
+            # ERROR POSITION!--------------------------------------------------------------
             selected_games = numpy.random.choice(game_id_list, n_games, p=game_probs)
+            # ERROR TEXT: ValueError: probabilities contain NaN
+            # -----------------------------------------------------------------------------
         else:
             selected_games = numpy.random.choice(list(self.buffer.keys()), n_games)
             game_prob_dict = {}
@@ -230,8 +256,12 @@ class ReplayBuffer:
     def compute_target_value(self, game_history, index):
         # The value target is the discounted root value of the search tree td_steps into the
         # future, plus the discounted sum of all rewards until then.
+        # board game の場合、target_value = {win: 1, lose(draw): 0}
         bootstrap_index = index + self.config.td_steps
+        
         if bootstrap_index < len(game_history.root_values):
+            # max_moves <= td_steps の場合、ここは通らない。
+            # つまり board game の場合、ここは通らない。
             root_values = (
                 game_history.root_values
                 if game_history.reanalysed_predicted_root_values is None
@@ -259,13 +289,14 @@ class ReplayBuffer:
                 else -reward
             ) * self.config.discount**i
 
-        return value
+        return value 
 
     def make_target(self, game_history, state_index):
         """
         Generate targets for every unroll steps.
         """
-        target_values, target_rewards, target_policies, actions = [], [], [], []
+        target_values, target_rewards, target_policies, actions, observation = [], [], [], [], []
+        last_observation = None
         for current_index in range(
             state_index, state_index + self.config.num_unroll_steps + 1
         ):
@@ -276,6 +307,13 @@ class ReplayBuffer:
                 target_rewards.append(game_history.reward_history[current_index])
                 target_policies.append(game_history.child_visits[current_index])
                 actions.append(game_history.action_history[current_index])
+                observation.append(
+                    game_history.get_stacked_observations(
+                        current_index,
+                        self.config.stacked_observations,
+                        len(self.config.action_space),
+                    )
+                )
             elif current_index == len(game_history.root_values):
                 target_values.append(0)
                 target_rewards.append(game_history.reward_history[current_index])
@@ -287,6 +325,12 @@ class ReplayBuffer:
                     ]
                 )
                 actions.append(game_history.action_history[current_index])
+                last_observation = game_history.get_stacked_observations(
+                    current_index,
+                    self.config.stacked_observations,
+                    len(self.config.action_space),
+                )
+                observation.append(last_observation)
             else:
                 # States past the end of games are treated as absorbing states
                 target_values.append(0)
@@ -299,8 +343,11 @@ class ReplayBuffer:
                     ]
                 )
                 actions.append(numpy.random.choice(self.config.action_space))
+                observation.append(last_observation)
 
-        return target_values, target_rewards, target_policies, actions
+        observation_numpy = numpy.stack(observation, axis=0)
+
+        return target_values, target_rewards, target_policies, actions, observation_numpy
 
 
 @ray.remote
@@ -324,6 +371,10 @@ class Reanalyse:
         self.model.eval()
 
         self.num_reanalysed_games = initial_checkpoint["num_reanalysed_games"]
+
+        # CHANGED ----------------------------------------------------------------
+        discord_io.reanalyse_send("Initialized!")
+        # ------------------------------------------------------------------------
 
     def reanalyse(self, replay_buffer, shared_storage):
         while ray.get(shared_storage.get_info.remote("num_played_games")) < 1:
@@ -351,17 +402,18 @@ class Reanalyse:
                         )
                         for i in range(len(game_history.root_values))
                     ]
-                )
+                ) # [stacked_observation, stacked_observation, ..., stacked_observation]
 
                 observations = (
                     torch.tensor(observations)
                     .float()
                     .to(next(self.model.parameters()).device)
-                )
+                ) # convert to tensor type
                 values = models.support_to_scalar(
-                    self.model.initial_inference(observations)[0],
+                    # representation -> prediction
+                    self.model.initial_inference(observations)[0], # value is index=0
                     self.config.support_size,
-                )
+                ) # [value, value, ..., value]
                 game_history.reanalysed_predicted_root_values = (
                     torch.squeeze(values).detach().cpu().numpy()
                 )
@@ -371,3 +423,10 @@ class Reanalyse:
             shared_storage.set_info.remote(
                 "num_reanalysed_games", self.num_reanalysed_games
             )
+
+            # CHANGED -------------------------------------------------------------
+            discord_io.reanalyse_send("Trained step: {}\nreanalysed-play step: {}\n[Reanalyse Game] Episode have finished!".format(
+                ray.get(shared_storage.get_info.remote("training_step")),
+                self.num_reanalysed_games,
+            ))
+            # ---------------------------------------------------------------------

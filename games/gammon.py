@@ -1,10 +1,11 @@
 import datetime
 import pathlib
-
-import numpy
 import torch
 
 from .abstract_game import AbstractGame
+from .backgammon import config
+from .backgammon.gammon_api import BackGammon
+
 
 
 class MuZeroConfig:
@@ -18,22 +19,23 @@ class MuZeroConfig:
 
 
         ### Game
-        self.observation_shape = (3, 6, 7)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
-        self.action_space = list(range(7))  # Fixed list of all possible actions. You should only edit the length
+        self.observation_shape = (config.OBS_DEPTH, config.OBS_WIDTH, config.OBS_HEIGHT)
+        self.action_space = list(range(config.ACTION_SPACE))  # ([skip/bar]+6*4+[bar/skip])
         self.players = list(range(2))  # List of players. You should only edit the length
         self.stacked_observations = 0  # Number of previous observations and previous actions to add to the current observation
 
         # Evaluate
         self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
-        self.opponent = "expert"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
+        self.opponent = "random"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
 
 
 
         ### Self-Play
         self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
-        self.max_moves = 42  # Maximum number of moves if game is not finished before
-        self.num_simulations = 100 #() # Number of future moves self-simulated
+        self.max_moves = 500  # Maximum number of moves if game is not finished before
+        self.num_simulations = 50 #() # Number of future moves self-simulated
+        # [paper settings] num_simulations: {for board game: 800, for atari: 50}
         self.discount = 1  # Chronological discount of the reward
         self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
 
@@ -45,22 +47,25 @@ class MuZeroConfig:
         self.pb_c_base = 19652
         self.pb_c_init = 1.25
 
-
-
         ### Network
         self.network = "resnet"  # "resnet" / "fullyconnected"
-        self.support_size = 10  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
+        self.support_size = 0  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
         
         # Residual Network
         self.downsample = False  # Downsample observations before representation network, False / "CNN" (lighter) / "resnet" (See paper appendix Network Architecture)
         self.blocks = 15  # Number of blocks in the ResNet
-        self.channels = 64  # Number of channels in the ResNet
-        self.reduced_channels_reward = 16  # Number of channels in reward head
+        self.channels = 128  # Number of channels in the ResNet
+        self.reduced_channels_reward = 0  # Number of channels in reward head
         self.reduced_channels_value = 16  # Number of channels in value head
         self.reduced_channels_policy = 16  # Number of channels in policy head
-        self.resnet_fc_reward_layers = [64]  # Define the hidden layers in the reward head of the dynamic network
-        self.resnet_fc_value_layers = [64]  # Define the hidden layers in the value head of the prediction network
-        self.resnet_fc_policy_layers = [64]  # Define the hidden layers in the policy head of the prediction network
+        self.resnet_fc_reward_layers = []  # Define the hidden layers in the reward head of the dynamic network
+        self.resnet_fc_value_layers = [256]  # Define the hidden layers in the value head of the prediction network
+        self.resnet_fc_policy_layers = [256]  # Define the hidden layers in the policy head of the prediction network
+        # ADDED ------------------------------------------------------------------------------------------------
+        self.num_choice = 10
+        self.reduced_channels_choice = 4
+        self.resnet_fc_choice_layers = [32]
+        # ------------------------------------------------------------------------------------------------------
         
         # Fully Connected Network 
         # irrelevant!!!!!!!!!!!!
@@ -96,15 +101,15 @@ class MuZeroConfig:
         ### Replay Buffer
         self.replay_buffer_size = 10000  # Number of self-play games to keep in the replay buffer
         self.num_unroll_steps = 5  # Number of game moves to keep for every batch element
-        self.td_steps = 42  # Number of steps in the future to take into account for calculating the target value
-        self.PER = True  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
+        # [paper settings] num_unroll_steps: {for board game: } 
+        self.td_steps = self.max_moves  # Number of steps in the future to take into account for calculating the target value
+        # [paper settings] td_steps: {for board game: infinity, for atari: 10}
+        self.PER = False  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
         self.PER_alpha = 0.5  # How much prioritization is used, 0 corresponding to the uniform case, paper suggests 1
 
         # Reanalyze (See paper appendix Reanalyse)
         self.use_last_model_value = False  # Use the last model to provide a fresher, stable n-step value (See paper appendix Reanalyze)
         self.reanalyse_on_gpu = False
-
-
 
         ### Adjust the self play / training ratio to avoid over/underfitting
         self.self_play_delay = 0  # Number of seconds to wait after each played game
@@ -122,16 +127,11 @@ class MuZeroConfig:
         """
         return 1
 
-
 class Game(AbstractGame):
-    """
-    Game wrapper.
-    """
-
     def __init__(self, seed=None):
-        self.env = Connect4()
+        self.env = BackGammon(seed, True)
 
-    def step(self, action):
+    def step(self, action: int):
         """
         Apply action to the game.
 
@@ -141,9 +141,11 @@ class Game(AbstractGame):
         Returns:
             The new observation, the reward and a boolean if the game has ended.
         """
-        observation, reward, done = self.env.step(action)
-        return observation, reward * 10, done
-
+        game_over = self.env.action(action)
+        reward = game_over
+        observation = self.env.get_observation()
+        return observation, reward, game_over
+    
     def to_play(self):
         """
         Return the current player.
@@ -151,8 +153,17 @@ class Game(AbstractGame):
         Returns:
             The current player, it should be an element of the players list in the config.
         """
-        return self.env.to_play()
+        return self.env.turn
 
+    def move_number(self):
+        """
+        Return the current move_number.
+
+        Returns:
+            The current move_number.
+        """
+        return self.env.gammon.move_number
+    
     def legal_actions(self):
         """
         Should return the legal actions at each turn, if it is not available, it can return
@@ -164,8 +175,8 @@ class Game(AbstractGame):
         Returns:
             An array of integers, subset of the action space.
         """
-        return self.env.legal_actions()
-
+        return self.env.get_legal_actions()
+    
     def reset(self):
         """
         Reset the game for a new game.
@@ -173,14 +184,15 @@ class Game(AbstractGame):
         Returns:
             Initial observation of the game.
         """
-        return self.env.reset()
-
+        self.env.reset(True)
+        observation = self.env.get_observation()
+        return observation
+    
     def render(self):
         """
         Display the game observation.
         """
-        self.env.render()
-        # input("Press enter to take a step ")
+        print(self.env)
 
     def human_to_action(self):
         """
@@ -190,11 +202,8 @@ class Game(AbstractGame):
         Returns:
             An integer from the action space.
         """
-        choice = input(f"Enter the column to play for the player {self.to_play()}: ")
-        while choice not in [str(action) for action in self.legal_actions()]:
-            choice = input("Enter another column : ")
-        return int(choice)
-
+        return
+    
     def expert_agent(self):
         """
         Hard coded agent that MuZero faces to assess his progress in multiplayer games.
@@ -203,8 +212,8 @@ class Game(AbstractGame):
         Returns:
             Action as an integer to take in the current game state
         """
-        return self.env.expert_action()
-
+        return 
+    
     def action_to_string(self, action_number):
         """
         Convert an action number to a string representing the action.
@@ -215,133 +224,4 @@ class Game(AbstractGame):
         Returns:
             String representing the action.
         """
-        return f"Play column {action_number + 1}"
-
-
-class Connect4:
-    def __init__(self):
-        self.board = numpy.zeros((6, 7), dtype="int32")
-        self.player = 1
-
-    def to_play(self):
-        return 0 if self.player == 1 else 1
-
-    def reset(self):
-        self.board = numpy.zeros((6, 7), dtype="int32")
-        self.player = 1
-        return self.get_observation()
-
-    def step(self, action):
-        for i in range(6):
-            if self.board[i][action] == 0:
-                self.board[i][action] = self.player
-                break
-
-        done = self.have_winner() or len(self.legal_actions()) == 0
-
-        reward = 1 if self.have_winner() else 0
-
-        self.player *= -1
-
-        return self.get_observation(), reward, done
-
-    def get_observation(self):
-        board_player1 = numpy.where(self.board == 1, 1.0, 0.0)
-        board_player2 = numpy.where(self.board == -1, 1.0, 0.0)
-        board_to_play = numpy.full((6, 7), self.player, dtype="int32")
-        return numpy.array([board_player1, board_player2, board_to_play])
-
-    def legal_actions(self):
-        legal = []
-        for i in range(7):
-            if self.board[5][i] == 0:
-                legal.append(i)
-        return legal
-
-    def have_winner(self):
-        # Horizontal check
-        for i in range(4):
-            for j in range(6):
-                if (
-                    self.board[j][i] == self.player
-                    and self.board[j][i + 1] == self.player
-                    and self.board[j][i + 2] == self.player
-                    and self.board[j][i + 3] == self.player
-                ):
-                    return True
-
-        # Vertical check
-        for i in range(7):
-            for j in range(3):
-                if (
-                    self.board[j][i] == self.player
-                    and self.board[j + 1][i] == self.player
-                    and self.board[j + 2][i] == self.player
-                    and self.board[j + 3][i] == self.player
-                ):
-                    return True
-
-        # Positive diagonal check
-        for i in range(4):
-            for j in range(3):
-                if (
-                    self.board[j][i] == self.player
-                    and self.board[j + 1][i + 1] == self.player
-                    and self.board[j + 2][i + 2] == self.player
-                    and self.board[j + 3][i + 3] == self.player
-                ):
-                    return True
-
-        # Negative diagonal check
-        for i in range(4):
-            for j in range(3, 6):
-                if (
-                    self.board[j][i] == self.player
-                    and self.board[j - 1][i + 1] == self.player
-                    and self.board[j - 2][i + 2] == self.player
-                    and self.board[j - 3][i + 3] == self.player
-                ):
-                    return True
-
-        return False
-
-    def expert_action(self):
-        board = self.board
-        action = numpy.random.choice(self.legal_actions())
-        for k in range(3):
-            for l in range(4):
-                sub_board = board[k : k + 4, l : l + 4]
-                # Horizontal and vertical checks
-                for i in range(4):
-                    if abs(sum(sub_board[i, :])) == 3:
-                        ind = numpy.where(sub_board[i, :] == 0)[0][0]
-                        if numpy.count_nonzero(board[:, ind + l]) == i + k:
-                            action = ind + l
-                            if self.player * sum(sub_board[i, :]) > 0:
-                                return action
-
-                    if abs(sum(sub_board[:, i])) == 3:
-                        action = i + l
-                        if self.player * sum(sub_board[:, i]) > 0:
-                            return action
-                # Diagonal checks
-                diag = sub_board.diagonal()
-                anti_diag = numpy.fliplr(sub_board).diagonal()
-                if abs(sum(diag)) == 3:
-                    ind = numpy.where(diag == 0)[0][0]
-                    if numpy.count_nonzero(board[:, ind + l]) == ind + k:
-                        action = ind + l
-                        if self.player * sum(diag) > 0:
-                            return action
-
-                if abs(sum(anti_diag)) == 3:
-                    ind = numpy.where(anti_diag == 0)[0][0]
-                    if numpy.count_nonzero(board[:, 3 - ind + l]) == ind + k:
-                        action = 3 - ind + l
-                        if self.player * sum(anti_diag) > 0:
-                            return action
-
-        return action
-
-    def render(self):
-        print(self.board[::-1])
+        return

@@ -19,7 +19,7 @@ class MuZeroNetwork:
                 config.fc_dynamics_layers,
                 config.support_size,
             )
-        elif config.network == "resnet": ###########################################################################################
+        elif config.network == "resnet":
             return MuZeroResidualNetwork(
                 config.observation_shape,
                 config.stacked_observations,
@@ -474,21 +474,21 @@ class PredictionNetwork(torch.nn.Module):
         return policy, value, choice
 
 
-class MuZeroResidualNetwork(AbstractNetwork): ########################################################################################
+class MuZeroResidualNetwork(AbstractNetwork):
     def __init__(
         self,
-        observation_shape, # 観測(入力シェイプ)
-        stacked_observations,　# 過去の観測数?
-        action_space_size, # 方策の出力シェイプ
-        num_blocks,　# resnetのブロック数(縦)
-        num_channels, # resnetのチャネル数(横)
-        reduced_channels_reward, # 削減チャネル数(reward)(dynamics)
-        reduced_channels_value, # 削減チャネル数(value)(prediction)
-        reduced_channels_policy, # 削減チャネル数(policy)(prediction)
-        fc_reward_layers, # reward network layer (dynamics)
-        fc_value_layers, # value network layer (prediction)
-        fc_policy_layers, # policy network layer (prediction)
-        support_size, # reward&value network 出力サイズ ()
+        observation_shape,
+        stacked_observations,
+        action_space_size,
+        num_blocks,
+        num_channels,
+        reduced_channels_reward,
+        reduced_channels_value,
+        reduced_channels_policy,
+        fc_reward_layers,
+        fc_value_layers,
+        fc_policy_layers,
+        support_size,
         downsample,
         # ADDED --------------------------------------------------------------------------
         reduced_channels_choice,
